@@ -27,7 +27,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers</div>
+    <div id="info">VR/AR Boids System<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br><br><b>GOAL: Herd flock through the Golden Anomaly</b></div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -96,6 +96,51 @@
         scene.add(lightCyan);
         scene.add(lightMagenta);
 
+        // --- WRIST HUD SETUP ---
+        const hudCanvas = document.createElement('canvas');
+        hudCanvas.width = 512;
+        hudCanvas.height = 256;
+        const hudCtx = hudCanvas.getContext('2d');
+        const hudTexture = new THREE.CanvasTexture(hudCanvas);
+        const hudMat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.9, depthTest: false });
+        const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.1), hudMat);
+        hudMesh.rotation.x = -Math.PI / 2; // Face upward when wrist is horizontal
+        hudMesh.position.set(0, 0.05, 0.05); // Offset slightly above wrist
+
+        let currentScore = 0;
+        let currentProgress = 0;
+        const THRESHOLD = 50; // Boids needed inside ring to score
+
+        function updateHUD(score, progress) {
+            hudCtx.clearRect(0, 0, 512, 256);
+            hudCtx.fillStyle = 'rgba(0, 20, 40, 0.8)';
+            hudCtx.fillRect(0, 0, 512, 256);
+            
+            hudCtx.strokeStyle = '#00ffff';
+            hudCtx.lineWidth = 4;
+            hudCtx.strokeRect(2, 2, 508, 252);
+
+            hudCtx.fillStyle = '#ffffff';
+            hudCtx.font = 'bold 60px monospace';
+            hudCtx.textAlign = 'center';
+            hudCtx.fillText(`ANOMALIES: ${score}`, 256, 80);
+
+            // Progress bar
+            hudCtx.fillStyle = '#333333';
+            hudCtx.fillRect(50, 120, 412, 60);
+            
+            const fillRatio = Math.min(progress / THRESHOLD, 1.0);
+            hudCtx.fillStyle = fillRatio >= 1.0 ? '#ffffff' : '#ffaa00';
+            hudCtx.fillRect(56, 126, 400 * fillRatio, 48);
+            
+            hudCtx.fillStyle = '#ffffff';
+            hudCtx.font = '30px monospace';
+            hudCtx.fillText(`HERD MASS: ${progress} / ${THRESHOLD}`, 256, 210);
+
+            hudTexture.needsUpdate = true;
+        }
+        updateHUD(0, 0);
+
         // --- HAND TRACKING SETUP ---
         const handModelFactory = new XRHandModelFactory();
         const hands = [];
@@ -112,6 +157,11 @@
             const handModel = handModelFactory.createHandModel(hand, 'mesh');
             hand.add(handModel);
             hands.push(hand);
+            
+            // Attach HUD to left hand (index 0)
+            if (i === 0) {
+                hand.add(hudMesh);
+            }
         }
 
         const tetherGeo = new THREE.BufferGeometry().setFromPoints([
@@ -126,39 +176,22 @@
         const BOID_COUNT = 5000; 
         const FLOCK_BOUNDS = 15; 
         
-        // --- CUSTOM DIGITAL BIRD GEOMETRY ---
-        // 8-Triangle Low-Poly Glider
         const vArray = new Float32Array([
-            // Left Wing Top (Spine, LWT, Nose)
             0, 0.04, 0.05,   -0.3, 0, 0.05,   0, 0, -0.15,
-            // Left Wing Bottom (Belly, Nose, LWT)
             0, -0.04, 0.05,  0, 0, -0.15,     -0.3, 0, 0.05,
-            // Right Wing Top (Spine, Nose, RWT)
             0, 0.04, 0.05,   0, 0, -0.15,     0.3, 0, 0.05,
-            // Right Wing Bottom (Belly, RWT, Nose)
             0, -0.04, 0.05,  0.3, 0, 0.05,    0, 0, -0.15,
-            // Left Tail Top (Spine, Tail, LWT)
             0, 0.04, 0.05,   0, 0, 0.15,      -0.3, 0, 0.05,
-            // Left Tail Bottom (Belly, LWT, Tail)
             0, -0.04, 0.05,  -0.3, 0, 0.05,   0, 0, 0.15,
-            // Right Tail Top (Spine, RWT, Tail)
             0, 0.04, 0.05,   0.3, 0, 0.05,    0, 0, 0.15,
-            // Right Tail Bottom (Belly, Tail, RWT)
             0, -0.04, 0.05,  0, 0, 0.15,      0.3, 0, 0.05
         ]);
         const boidGeo = new THREE.BufferGeometry();
         boidGeo.setAttribute('position', new THREE.BufferAttribute(vArray, 3));
         boidGeo.computeVertexNormals();
         
-        // Custom Shader Material
-        const boidMat = new THREE.MeshStandardMaterial({
-            color: 0xffffff, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide
-        });
-
-        // Contrasting Wireframe Material
-        const wireMat = new THREE.MeshBasicMaterial({
-            color: 0x000000, wireframe: true, transparent: true, opacity: 0.7
-        });
+        const boidMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide });
+        const wireMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.7 });
 
         const shaderInjector = (shader, isEmissive) => {
             shader.vertexShader = `
@@ -168,7 +201,6 @@
             `.replace(
                 `#include <beginnormal_vertex>`,
                 `
-                // Smooth weight so body stays rigid while wingtips flap
                 float flapWeight = clamp(abs(position.x) / 0.3, 0.0, 1.0);
                 float flapAngle = sin(aFlapPhase) * 0.8;
                 float angle_n = sign(position.x) * flapAngle * flapWeight;
@@ -184,20 +216,16 @@
                 `#include <begin_vertex>`,
                 `
                 vec3 transformed = vec3(position);
-                // Variables flapWeight and flapAngle are already declared in beginnormal_vertex
                 float angle = sign(position.x) * flapAngle * flapWeight; 
                 float c = cos(angle);
                 float s = sin(angle);
-                
                 float newX = transformed.x * c - transformed.y * s;
                 float newY = transformed.x * s + transformed.y * c;
                 transformed.x = newX;
                 transformed.y = newY;
-                
                 ${isEmissive ? 'vGlowColor = aGlowColor;' : ''}
                 `
             );
-            
             if (isEmissive) {
                 shader.fragmentShader = `
                     varying vec3 vGlowColor;
@@ -220,12 +248,10 @@
         boidGroup.position.set(0, 4, -10); 
         scene.add(boidGroup);
 
-        // Core glowing mesh
         const instancedMesh = new THREE.InstancedMesh(boidGeo, boidMat, BOID_COUNT);
         instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         boidGroup.add(instancedMesh);
 
-        // Sharp wireframe overlay
         const instancedMeshWire = new THREE.InstancedMesh(boidGeo, wireMat, BOID_COUNT);
         instancedMeshWire.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         boidGroup.add(instancedMeshWire);
@@ -233,9 +259,29 @@
         const flapPhases = new Float32Array(BOID_COUNT);
         const glowColors = new Float32Array(BOID_COUNT * 3);
         
-        // Share attributes between the core and the wireframe geometries
         boidGeo.setAttribute('aFlapPhase', new THREE.InstancedBufferAttribute(flapPhases, 1));
         boidGeo.setAttribute('aGlowColor', new THREE.InstancedBufferAttribute(glowColors, 3));
+
+        // --- GAME LOGIC: THE ANOMALY ---
+        const anomalyGeo = new THREE.TorusGeometry(1.5, 0.05, 16, 64);
+        const anomalyMat = new THREE.MeshStandardMaterial({
+            color: 0xffaa00, emissive: 0xffaa00, emissiveIntensity: 2.0, transparent: true, opacity: 0.8
+        });
+        const anomalyMesh = new THREE.Mesh(anomalyGeo, anomalyMat);
+        boidGroup.add(anomalyMesh); // Add to boidGroup so local coordinates match
+
+        function relocateAnomaly() {
+            anomalyMesh.position.set(
+                (Math.random() - 0.5) * 12,
+                (Math.random() - 0.5) * 8,
+                (Math.random() - 0.5) * 12
+            );
+            // Flash effect
+            anomalyMat.emissive.setHex(0xffffff);
+            anomalyMat.emissiveIntensity = 10.0;
+            anomalyMesh.scale.set(1.5, 1.5, 1.5);
+        }
+        relocateAnomaly();
 
         const flockTarget = new THREE.Vector3();
         let shockwaves = []; 
@@ -273,8 +319,6 @@
 
                 this.flapPhase = Math.random() * Math.PI * 2;
                 this.rollAngle = 0;
-                
-                // Track fear states for deflocking
                 this.panicTimer = 0; 
             }
 
@@ -315,7 +359,6 @@
                     _sep.divideScalar(sepTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
                 }
 
-                // If panicked, zero out alignment/cohesion so they just scatter
                 const alignWeight = this.panicTimer > 0 ? 0.0 : 1.2;
                 const cohWeight = this.panicTimer > 0 ? 0.0 : 0.8;
                 const sepWeight = this.panicTimer > 0 ? 4.0 : 2.0;
@@ -342,25 +385,22 @@
                     }
                 }
 
-                // Shockwaves (Deflock trigger)
                 for(let i=0; i<shockwaves.length; i++) {
                     const sw = shockwaves[i];
                     const distSq = this.position.distanceToSquared(sw.pos);
                     if (distSq < sw.radius * sw.radius) {
                         _tempV.subVectors(this.position, sw.pos).normalize().multiplyScalar(this.maxForce * 80.0 * sw.life);
                         this.acceleration.add(_tempV);
-                        this.panicTimer = 3.0; // Panics for 3 seconds upon impact
+                        this.panicTimer = 3.0; 
                     }
                 }
 
-                // Soft Boundary
                 const distFromCenter = this.position.length();
                 if (distFromCenter > FLOCK_BOUNDS) {
                     _tempV.subVectors(_zero, this.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
                     this.acceleration.add(_tempV);
                 }
 
-                // Local Hand Repulsion
                 for(let i=0; i<localHands.length; i++) {
                     const distSq = this.position.distanceToSquared(localHands[i]);
                     if (distSq < 2.25) { 
@@ -373,7 +413,6 @@
             update(dt, time) {
                 if (this.panicTimer > 0) this.panicTimer -= dt;
                 
-                // Temporarily increase speed while scattering
                 const currentMaxSpeed = this.panicTimer > 0 ? this.maxSpeed * 2.5 : this.maxSpeed;
 
                 this.velocity.add(this.acceleration.multiplyScalar(dt * 20.0));
@@ -425,15 +464,41 @@
             const time = clock.getElapsedTime();
             frameCounter++;
 
+            // Anomaly visual logic
+            anomalyMesh.rotation.y += rawDt;
+            anomalyMesh.rotation.x += rawDt * 0.5;
+            if (anomalyMat.emissiveIntensity > 2.0) anomalyMat.emissiveIntensity -= rawDt * 10;
+            if (anomalyMesh.scale.x > 1.0) anomalyMesh.scale.lerp(new THREE.Vector3(1,1,1), 0.1);
+            anomalyMat.emissive.lerp(new THREE.Color(0xffaa00), 0.05);
+
             hands.forEach(hand => {
                 hand.traverse((child) => {
-                    if (child.isMesh && child.material !== handMaterial) child.material = handMaterial;
+                    if (child.isMesh && child.material !== handMaterial && child.material !== hudMat) child.material = handMaterial;
                 });
             });
 
             let centerOfMass = new THREE.Vector3();
-            for(let b of boids) centerOfMass.add(b.position);
+            let boidsInAnomaly = 0;
+
+            for(let b of boids) {
+                centerOfMass.add(b.position);
+                // Check scoring collision
+                if (b.position.distanceToSquared(anomalyMesh.position) < 2.25) { // 1.5 radius squared
+                    boidsInAnomaly++;
+                }
+            }
             centerOfMass.divideScalar(BOID_COUNT);
+
+            // Update UI & Game Logic
+            if (boidsInAnomaly !== currentProgress) {
+                currentProgress = boidsInAnomaly;
+                updateHUD(currentScore, currentProgress);
+            }
+
+            if (currentProgress >= THRESHOLD) {
+                currentScore++;
+                relocateAnomaly();
+            }
             
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
             const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
@@ -546,7 +611,6 @@
             const pulse = 0.6 + 0.4 * Math.sin(time * 2.0);
             const phaseShift = time * 0.2; 
 
-            // Execute Batch Updates
             for (let i = 0; i < BOID_COUNT; i++) {
                 const boid = boids[i];
                 
@@ -555,7 +619,6 @@
                 }
                 boid.update(dt, time);
 
-                // Instanced Mesh Matrix Alignment
                 _dummy.position.copy(boid.position);
                 _dummy.quaternion.copy(boid.quaternion);
                 _dummy.rotateZ(boid.rollAngle);
@@ -564,10 +627,8 @@
                 instancedMesh.setMatrixAt(i, _dummy.matrix);
                 instancedMeshWire.setMatrixAt(i, _dummy.matrix);
 
-                // GPU Wing Phase Injection
                 flapPhases[i] = boid.flapPhase;
 
-                // GPU Color Interpolation
                 const distToCenter = boid.position.distanceTo(centerOfMass);
                 const normalizedDist = Math.max(0, Math.min(distToCenter / (FLOCK_BOUNDS * 0.8), 1.0));
                 
