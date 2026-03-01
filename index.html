@@ -64,35 +64,40 @@
         document.body.appendChild(vrBtn);
         document.body.appendChild(arBtn);
 
-        // --- AUDIO ENGINE (SYNTHETIC WIND) ---
-        let audioCtx, filter, gainNode, noiseSource;
+        // --- AUDIO ENGINE (TRUE SPATIAL WIND) ---
+        const listener = new THREE.AudioListener();
+        camera.add(listener);
+
+        const flockAudio = new THREE.PositionalAudio(listener);
+        scene.add(flockAudio); // Decoupled from hierarchy for explicit spatial placement
+
+        let filter;
         let audioInitialized = false;
 
         function initAudio() {
             if (audioInitialized) return;
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            const audioCtx = THREE.AudioContext.getContext();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
             
             const bufferSize = audioCtx.sampleRate * 2; 
             const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
             const output = noiseBuffer.getChannelData(0);
             for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
 
-            noiseSource = audioCtx.createBufferSource();
-            noiseSource.buffer = noiseBuffer;
-            noiseSource.loop = true;
+            flockAudio.setBuffer(noiseBuffer);
+            flockAudio.setRefDistance(2);
+            flockAudio.setMaxDistance(50);
+            flockAudio.setLoop(true);
+            flockAudio.setVolume(0); 
 
             filter = audioCtx.createBiquadFilter();
             filter.type = 'lowpass';
             filter.frequency.value = 100; 
+            flockAudio.setFilter(filter);
+            
+            flockAudio.play();
 
-            gainNode = audioCtx.createGain();
-            gainNode.gain.value = 0; 
-
-            noiseSource.connect(filter);
-            filter.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-
-            noiseSource.start();
             audioInitialized = true;
             document.getElementById('audio-prompt').style.display = 'none';
         }
@@ -144,11 +149,10 @@
         const hudTexture = new THREE.CanvasTexture(hudCanvas);
         const hudMat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.9, depthTest: false });
         
-        // Enlarged and repositioned to act like a smartwatch hovering off the wrist
         const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 0.15), hudMat);
-        hudMesh.position.set(0, 0.1, 0); 
-        hudMesh.rotation.x = -Math.PI / 2; 
-        hudMesh.rotation.z = Math.PI / 2;
+        // We decouple it from the hand hierarchy and drop it in the scene.
+        // It will be mathematically clamped to the wrist position in the render loop.
+        scene.add(hudMesh);
 
         let currentScore = 0;
         let currentProgress = 0;
@@ -216,11 +220,6 @@
             const handModel = handModelFactory.createHandModel(hand, 'mesh');
             hand.add(handModel);
             hands.push(hand);
-            
-            if (i === 0) {
-                // Attach to left hand model group for better tracking stability than raw controller space
-                handModel.add(hudMesh);
-            }
         }
 
         const tetherGeo = new THREE.BufferGeometry().setFromPoints([
@@ -576,17 +575,38 @@
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
             const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
 
+            // --- HUD DECOUPLED TRACKING (Always faces camera) ---
+            let leftWristPos = getJointPos(hands[0], 'wrist');
+            let leftHandFallback = new THREE.Vector3().setFromMatrixPosition(hands[0].matrixWorld);
+
+            if (leftWristPos && leftWristPos.lengthSq() > 0.01) {
+                hudMesh.position.copy(leftWristPos);
+                hudMesh.position.y += 0.15; // Hover 15cm above wrist
+                hudMesh.lookAt(camPos);
+                hudMesh.visible = true;
+            } else if (leftHandFallback.lengthSq() > 0.01) {
+                hudMesh.position.copy(leftHandFallback);
+                hudMesh.position.y += 0.15; 
+                hudMesh.lookAt(camPos);
+                hudMesh.visible = true;
+            } else {
+                hudMesh.visible = false;
+            }
+
             // --- SPATIAL AUDIO UPDATE ---
-            if (audioInitialized && audioCtx.state === 'running') {
-                // Map velocity to filter frequency (makes it roar when they fly fast)
+            if (audioInitialized && flockAudio.isPlaying) {
+                const audioCtx = THREE.AudioContext.getContext();
                 const targetFreq = 200 + (avgVelocity * 10000);
                 filter.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.1);
                 
-                // Map distance to volume (louder when closer)
                 const distToCam = camPos.distanceTo(comWorld);
-                // Ramp volume up sharply as they approach, cap at 1.0
                 const targetVol = Math.max(0, Math.min(1.0 - (distToCam / 25.0), 1.0));
-                gainNode.gain.setTargetAtTime(targetVol, audioCtx.currentTime, 0.1);
+                
+                // Tie volume to positional node's intrinsic gain
+                flockAudio.gain.gain.setTargetAtTime(targetVol, audioCtx.currentTime, 0.1);
+                
+                // Track spatial position frame-by-frame
+                flockAudio.position.copy(comWorld);
             }
 
             // Update UI & Game Logic
