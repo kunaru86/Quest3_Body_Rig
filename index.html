@@ -27,7 +27,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)</div>
+    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Point at flock to guide them.</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -37,10 +37,10 @@
 
         // --- CORE SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x030308);
-        scene.fog = new THREE.FogExp2(0x030308, 0.035);
+        scene.background = new THREE.Color(0x010103);
+        scene.fog = new THREE.FogExp2(0x010103, 0.035);
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
         camera.position.set(0, 5, 15);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
@@ -49,16 +49,45 @@
         renderer.xr.enabled = true;
         document.body.appendChild(renderer.domElement);
 
-        // Session init requesting hand tracking
         const xrOptions = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
         
         const vrBtn = VRButton.createButton(renderer, xrOptions);
         const arBtn = ARButton.createButton(renderer, xrOptions);
         
-        // Stack the buttons
         arBtn.style.bottom = '80px';
         document.body.appendChild(vrBtn);
         document.body.appendChild(arBtn);
+
+        // --- ENVIRONMENT SETUP ---
+        // Solid Floor
+        const floorGeo = new THREE.PlaneGeometry(200, 200);
+        const floorMat = new THREE.MeshStandardMaterial({ 
+            color: 0x020205, 
+            roughness: 0.9, 
+            metalness: 0.1 
+        });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -5;
+        scene.add(floor);
+
+        // Night Sky (Stars)
+        const starsGeo = new THREE.BufferGeometry();
+        const starsCount = 3000;
+        const posArray = new Float32Array(starsCount * 3);
+        for(let i = 0; i < starsCount * 3; i++) {
+            // Distribute stars far out
+            posArray[i] = (Math.random() - 0.5) * 150;
+        }
+        starsGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        const starsMat = new THREE.PointsMaterial({
+            size: 0.1, 
+            color: 0xffffff, 
+            transparent: true, 
+            opacity: 0.8
+        });
+        const starMesh = new THREE.Points(starsGeo, starsMat);
+        scene.add(starMesh);
 
         // Handle Passthrough (AR) vs VR modes
         renderer.xr.addEventListener('sessionstart', () => {
@@ -66,11 +95,13 @@
             if (session.mode === 'immersive-ar') {
                 scene.background = null;
                 scene.fog = null;
-                gridHelper.visible = false;
+                floor.visible = false;
+                starMesh.visible = false;
             } else {
-                scene.background = new THREE.Color(0x030308);
-                scene.fog = new THREE.FogExp2(0x030308, 0.035);
-                gridHelper.visible = true;
+                scene.background = new THREE.Color(0x010103);
+                scene.fog = new THREE.FogExp2(0x010103, 0.035);
+                floor.visible = true;
+                starMesh.visible = true;
             }
         });
 
@@ -87,16 +118,11 @@
         scene.add(lightCyan);
         scene.add(lightMagenta);
 
-        // --- ENVIRONMENT ---
-        const gridHelper = new THREE.GridHelper(60, 60, 0x222222, 0x111111);
-        gridHelper.position.y = -5;
-        scene.add(gridHelper);
-
-        // --- HAND TRACKING SETUP ---
+        // --- HAND TRACKING & GUIDANCE SETUP ---
         const handModelFactory = new XRHandModelFactory();
         const hands = [];
+        const controllers = [];
         
-        // Custom glowing material for the hand mesh
         const handMaterial = new THREE.MeshStandardMaterial({
             color: 0x00ffff,
             emissive: 0x00aaff,
@@ -107,12 +133,29 @@
         });
 
         for (let i = 0; i < 2; i++) {
+            // Get controller for targetRay (pointing direction)
+            const controller = renderer.xr.getController(i);
+            scene.add(controller);
+            controllers.push(controller);
+
+            // Get hand mesh for visual and repulsion
             const hand = renderer.xr.getHand(i);
             scene.add(hand);
             const handModel = handModelFactory.createHandModel(hand, 'mesh');
             hand.add(handModel);
             hands.push(hand);
         }
+
+        // Visual tether line
+        const tetherGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const tetherMat = new THREE.LineBasicMaterial({ 
+            color: 0x00ffff, 
+            transparent: true, 
+            opacity: 0,
+            blending: THREE.AdditiveBlending 
+        });
+        const tetherLine = new THREE.Line(tetherGeo, tetherMat);
+        scene.add(tetherLine);
 
         // --- BOID SYSTEM ---
         const BOID_COUNT = 400; 
@@ -215,6 +258,7 @@
                 this.acceleration.add(cohesion.multiplyScalar(0.8));
                 this.acceleration.add(separation.multiplyScalar(2.0));
                 
+                // Pull towards current global target
                 const steerToTarget = new THREE.Vector3().subVectors(flockTarget, this.position);
                 steerToTarget.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 0.4);
                 this.acceleration.add(steerToTarget);
@@ -227,20 +271,13 @@
                 }
 
                 // --- HAND REPULSION LOGIC ---
-                // Makes the boids part like water when hands are nearby
                 hands.forEach(hand => {
-                    // Extract hand world position
                     const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
-                    
-                    // Only react if hand is somewhat close to avoid origin (0,0,0) glitches
                     if (handWorldPos.lengthSq() > 0.01) {
-                        // Transform hand world position to local boidGroup space for accurate math
                         const localHandPos = boidGroup.worldToLocal(handWorldPos.clone());
-                        
                         const distSq = this.position.distanceToSquared(localHandPos);
-                        if (distSq < 2.5) { // Influence radius
+                        if (distSq < 2.5) {
                             const push = new THREE.Vector3().subVectors(this.position, localHandPos);
-                            // Exponential push based on distance
                             push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 6.0);
                             this.acceleration.add(push);
                         }
@@ -294,7 +331,7 @@
             const time = clock.getElapsedTime();
             frameCounter++;
 
-            // Hack to force our custom material onto the dynamically loaded hand meshes
+            // Force custom wireframe glow material on hands
             hands.forEach(hand => {
                 hand.traverse((child) => {
                     if (child.isMesh && child.material !== handMaterial) {
@@ -303,22 +340,75 @@
                 });
             });
 
-            flockTarget.set(
-                Math.sin(time * 0.4) * 6,
-                Math.sin(time * 0.25) * 3,
-                Math.cos(time * 0.3) * 5
-            );
-
-            lightCyan.position.set(Math.cos(time * 0.5) * 15, Math.sin(time * 0.3) * 5 + 5, Math.sin(time * 0.5) * 15 - 5);
-            lightMagenta.position.set(Math.cos(time * 0.4 + Math.PI) * 15, Math.cos(time * 0.6) * 5 + 5, Math.sin(time * 0.4 + Math.PI) * 15 - 5);
-
+            // Calculate Flock Center of Mass 
             let centerOfMass = new THREE.Vector3();
             for(let b of boids) centerOfMass.add(b.position);
             centerOfMass.divideScalar(BOID_COUNT);
+            
+            // World space center of mass for interaction math
+            const comWorld = boidGroup.localToWorld(centerOfMass.clone());
+
+            // --- GUIDANCE LOGIC ---
+            let maxDot = 0;
+            let guidingCtrl = null;
+            let tetherStartPos = null;
+
+            controllers.forEach((controller, i) => {
+                const ctrlWorldPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
+                if (ctrlWorldPos.lengthSq() < 0.01) return;
+
+                // Controller target ray usually points down -Z
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(controller.quaternion).normalize();
+                
+                // Vector towards the flock
+                const toFlock = new THREE.Vector3().subVectors(comWorld, ctrlWorldPos).normalize();
+                const dot = forward.dot(toFlock);
+
+                // If pointing closely at the flock's mass
+                if (dot > 0.85 && dot > maxDot) {
+                    maxDot = dot;
+                    guidingCtrl = controller;
+                    
+                    // Fallback to controller pos if hand mesh isn't tracking yet
+                    const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hands[i].matrixWorld);
+                    tetherStartPos = handWorldPos.lengthSq() > 0.01 ? handWorldPos : ctrlWorldPos;
+                }
+            });
+
+            if (guidingCtrl) {
+                // Determine target offset based on hand pointing
+                const ctrlWorldPos = new THREE.Vector3().setFromMatrixPosition(guidingCtrl.matrixWorld);
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(guidingCtrl.quaternion).normalize();
+                
+                // Sweep flock at its current distance, projecting the point forward
+                const distToFlock = ctrlWorldPos.distanceTo(comWorld);
+                const projectedWorldTarget = ctrlWorldPos.clone().add(forward.multiplyScalar(distToFlock));
+                
+                // Convert to local boidGroup space and lerp smoothly
+                flockTarget.lerp(boidGroup.worldToLocal(projectedWorldTarget), 0.05);
+
+                // Render tether connecting hand to flock center
+                tetherLine.geometry.setFromPoints([tetherStartPos, comWorld]);
+                tetherMat.opacity = Math.min(tetherMat.opacity + 0.05, 0.5);
+            } else {
+                // Revert to Lissajous automatic orbit if no one is guiding
+                const idleTarget = new THREE.Vector3(
+                    Math.sin(time * 0.4) * 6,
+                    Math.sin(time * 0.25) * 3,
+                    Math.cos(time * 0.3) * 5
+                );
+                flockTarget.lerp(idleTarget, 0.02);
+                tetherMat.opacity = Math.max(tetherMat.opacity - 0.05, 0);
+            }
+
+            // Light Orbits
+            lightCyan.position.set(Math.cos(time * 0.5) * 15, Math.sin(time * 0.3) * 5 + 5, Math.sin(time * 0.5) * 15 - 5);
+            lightMagenta.position.set(Math.cos(time * 0.4 + Math.PI) * 15, Math.cos(time * 0.6) * 5 + 5, Math.sin(time * 0.4 + Math.PI) * 15 - 5);
 
             const pulse = 0.6 + 0.4 * Math.sin(time * 2.0);
             const phaseShift = time * 0.2; 
 
+            // Update Physics
             for (let i = 0; i < boids.length; i++) {
                 const boid = boids[i];
                 
