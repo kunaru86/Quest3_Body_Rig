@@ -275,28 +275,34 @@
             `.replace(
                 `#include <beginnormal_vertex>`,
                 `
-                float flapWeight = clamp(abs(position.x) / 0.3, 0.0, 1.0);
-                float flapAngle = sin(aFlapPhase) * 0.8;
-                float angle_n = sign(position.x) * flapAngle * flapWeight;
-                float cn = cos(angle_n);
-                float sn = sin(angle_n);
                 vec3 objectNormal = vec3(normal);
-                float nX = objectNormal.x * cn - objectNormal.y * sn;
-                float nY = objectNormal.x * sn + objectNormal.y * cn;
-                objectNormal.x = nX;
-                objectNormal.y = nY;
+                {
+                    float flapWeight = clamp(abs(position.x) / 0.3, 0.0, 1.0);
+                    float flapAngle = sin(aFlapPhase) * 0.8;
+                    float angle_n = sign(position.x) * flapAngle * flapWeight;
+                    float cn = cos(angle_n);
+                    float sn = sin(angle_n);
+                    float nX = objectNormal.x * cn - objectNormal.y * sn;
+                    float nY = objectNormal.x * sn + objectNormal.y * cn;
+                    objectNormal.x = nX;
+                    objectNormal.y = nY;
+                }
                 `
             ).replace(
                 `#include <begin_vertex>`,
                 `
                 vec3 transformed = vec3(position);
-                float angle = sign(position.x) * flapAngle * flapWeight; 
-                float c = cos(angle);
-                float s = sin(angle);
-                float newX = transformed.x * c - transformed.y * s;
-                float newY = transformed.x * s + transformed.y * c;
-                transformed.x = newX;
-                transformed.y = newY;
+                {
+                    float flapWeight = clamp(abs(position.x) / 0.3, 0.0, 1.0);
+                    float flapAngle = sin(aFlapPhase) * 0.8;
+                    float angle = sign(position.x) * flapAngle * flapWeight; 
+                    float c = cos(angle);
+                    float s = sin(angle);
+                    float newX = transformed.x * c - transformed.y * s;
+                    float newY = transformed.x * s + transformed.y * c;
+                    transformed.x = newX;
+                    transformed.y = newY;
+                }
                 ${isEmissive ? 'vGlowColor = aGlowColor;' : ''}
                 `
             );
