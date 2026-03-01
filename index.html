@@ -15,6 +15,11 @@
             pointer-events: none;
             z-index: 100;
         }
+        #audio-prompt {
+            position: absolute;
+            bottom: 20px; width: 100%; text-align: center;
+            color: #00ffff; font-family: monospace; z-index: 100;
+        }
     </style>
     <!-- Import Map for Three.js -->
     <script type="importmap">
@@ -28,6 +33,7 @@
 </head>
 <body>
     <div id="info">VR/AR Boids System<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br><br><b>GOAL: Herd flock through the Golden Anomaly</b></div>
+    <div id="audio-prompt">Click anywhere or enter VR to enable Spatial Audio</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -58,6 +64,43 @@
         document.body.appendChild(vrBtn);
         document.body.appendChild(arBtn);
 
+        // --- AUDIO ENGINE (SYNTHETIC WIND) ---
+        let audioCtx, filter, gainNode, noiseSource;
+        let audioInitialized = false;
+
+        function initAudio() {
+            if (audioInitialized) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            const bufferSize = audioCtx.sampleRate * 2; 
+            const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+
+            noiseSource = audioCtx.createBufferSource();
+            noiseSource.buffer = noiseBuffer;
+            noiseSource.loop = true;
+
+            filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 100; 
+
+            gainNode = audioCtx.createGain();
+            gainNode.gain.value = 0; 
+
+            noiseSource.connect(filter);
+            filter.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            noiseSource.start();
+            audioInitialized = true;
+            document.getElementById('audio-prompt').style.display = 'none';
+        }
+
+        document.body.addEventListener('pointerdown', initAudio, { once: true });
+        vrBtn.addEventListener('click', initAudio);
+        arBtn.addEventListener('click', initAudio);
+
         // --- ENVIRONMENT SETUP ---
         const starsGeo = new THREE.BufferGeometry();
         const starsCount = 3000;
@@ -83,14 +126,11 @@
             }
         });
 
-        // --- LIGHTING ---
         const fillLight = new THREE.HemisphereLight(0x0044aa, 0x001133, 1.5);
         scene.add(fillLight);
-        
         const rimLight = new THREE.DirectionalLight(0xff6600, 2.0);
         rimLight.position.set(-10, 10, -10);
         scene.add(rimLight);
-
         const lightCyan = new THREE.PointLight(0x00ffff, 50, 20);
         const lightMagenta = new THREE.PointLight(0xff00ff, 50, 20);
         scene.add(lightCyan);
@@ -99,47 +139,66 @@
         // --- WRIST HUD SETUP ---
         const hudCanvas = document.createElement('canvas');
         hudCanvas.width = 512;
-        hudCanvas.height = 256;
+        hudCanvas.height = 300;
         const hudCtx = hudCanvas.getContext('2d');
         const hudTexture = new THREE.CanvasTexture(hudCanvas);
         const hudMat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.9, depthTest: false });
-        const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.1), hudMat);
-        hudMesh.rotation.x = -Math.PI / 2; // Face upward when wrist is horizontal
-        hudMesh.position.set(0, 0.05, 0.05); // Offset slightly above wrist
+        
+        // Enlarged and repositioned to act like a smartwatch hovering off the wrist
+        const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 0.15), hudMat);
+        hudMesh.position.set(0, 0.1, 0); 
+        hudMesh.rotation.x = -Math.PI / 2; 
+        hudMesh.rotation.z = Math.PI / 2;
 
         let currentScore = 0;
         let currentProgress = 0;
-        const THRESHOLD = 50; // Boids needed inside ring to score
+        let totalCaptured = 0;
+        let sessionStartTime = null;
+        const THRESHOLD = 50; 
 
-        function updateHUD(score, progress) {
-            hudCtx.clearRect(0, 0, 512, 256);
-            hudCtx.fillStyle = 'rgba(0, 20, 40, 0.8)';
-            hudCtx.fillRect(0, 0, 512, 256);
+        function formatTime(seconds) {
+            const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+            const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        function updateHUD(score, progress, total, timeStr) {
+            hudCtx.clearRect(0, 0, 512, 300);
+            hudCtx.fillStyle = 'rgba(0, 20, 40, 0.85)';
+            hudCtx.fillRect(0, 0, 512, 300);
             
             hudCtx.strokeStyle = '#00ffff';
             hudCtx.lineWidth = 4;
-            hudCtx.strokeRect(2, 2, 508, 252);
+            hudCtx.strokeRect(2, 2, 508, 296);
+
+            hudCtx.fillStyle = '#00ffff';
+            hudCtx.font = 'bold 40px monospace';
+            hudCtx.textAlign = 'center';
+            hudCtx.fillText(`T+ ${timeStr}`, 256, 50);
 
             hudCtx.fillStyle = '#ffffff';
-            hudCtx.font = 'bold 60px monospace';
-            hudCtx.textAlign = 'center';
-            hudCtx.fillText(`ANOMALIES: ${score}`, 256, 80);
+            hudCtx.font = 'bold 55px monospace';
+            hudCtx.fillText(`ANOMALIES: ${score}`, 256, 120);
 
             // Progress bar
             hudCtx.fillStyle = '#333333';
-            hudCtx.fillRect(50, 120, 412, 60);
+            hudCtx.fillRect(50, 150, 412, 40);
             
             const fillRatio = Math.min(progress / THRESHOLD, 1.0);
             hudCtx.fillStyle = fillRatio >= 1.0 ? '#ffffff' : '#ffaa00';
-            hudCtx.fillRect(56, 126, 400 * fillRatio, 48);
+            hudCtx.fillRect(54, 154, 404 * fillRatio, 32);
             
             hudCtx.fillStyle = '#ffffff';
-            hudCtx.font = '30px monospace';
-            hudCtx.fillText(`HERD MASS: ${progress} / ${THRESHOLD}`, 256, 210);
+            hudCtx.font = '28px monospace';
+            hudCtx.fillText(`HERD MASS: ${progress} / ${THRESHOLD}`, 256, 230);
+            
+            hudCtx.fillStyle = '#aaaaaa';
+            hudCtx.font = '24px monospace';
+            hudCtx.fillText(`TOTAL BIRDS SAVED: ${total}`, 256, 270);
 
             hudTexture.needsUpdate = true;
         }
-        updateHUD(0, 0);
+        updateHUD(0, 0, 0, "00:00");
 
         // --- HAND TRACKING SETUP ---
         const handModelFactory = new XRHandModelFactory();
@@ -158,9 +217,9 @@
             hand.add(handModel);
             hands.push(hand);
             
-            // Attach HUD to left hand (index 0)
             if (i === 0) {
-                hand.add(hudMesh);
+                // Attach to left hand model group for better tracking stability than raw controller space
+                handModel.add(hudMesh);
             }
         }
 
@@ -176,22 +235,37 @@
         const BOID_COUNT = 5000; 
         const FLOCK_BOUNDS = 15; 
         
+        // --- CUSTOM BIRD GEOMETRY V3 ---
+        // Spine: 0, 0.05, 0 | Belly: 0, -0.05, 0 | Nose: 0, 0, -0.2 | Tail: 0, 0, 0.2
+        // WingL: -0.4, 0, 0 | WingR: 0.4, 0, 0
         const vArray = new Float32Array([
-            0, 0.04, 0.05,   -0.3, 0, 0.05,   0, 0, -0.15,
-            0, -0.04, 0.05,  0, 0, -0.15,     -0.3, 0, 0.05,
-            0, 0.04, 0.05,   0, 0, -0.15,     0.3, 0, 0.05,
-            0, -0.04, 0.05,  0.3, 0, 0.05,    0, 0, -0.15,
-            0, 0.04, 0.05,   0, 0, 0.15,      -0.3, 0, 0.05,
-            0, -0.04, 0.05,  -0.3, 0, 0.05,   0, 0, 0.15,
-            0, 0.04, 0.05,   0.3, 0, 0.05,    0, 0, 0.15,
-            0, -0.04, 0.05,  0, 0, 0.15,      0.3, 0, 0.05
+            // Left Wing Top
+            0,0.05,0,  -0.4,0,0,  0,0,-0.2, 
+            0,0.05,0,  0,0,0.2,  -0.4,0,0,  
+            // Right Wing Top
+            0,0.05,0,  0,0,-0.2,  0.4,0,0,  
+            0,0.05,0,  0.4,0,0,   0,0,0.2,  
+            // Left Wing Bottom
+            0,-0.05,0,  0,0,-0.2, -0.4,0,0, 
+            0,-0.05,0,  -0.4,0,0, 0,0,0.2,  
+            // Right Wing Bottom
+            0,-0.05,0,  0.4,0,0,  0,0,-0.2, 
+            0,-0.05,0,  0,0,0.2,  0.4,0,0   
         ]);
         const boidGeo = new THREE.BufferGeometry();
         boidGeo.setAttribute('position', new THREE.BufferAttribute(vArray, 3));
         boidGeo.computeVertexNormals();
         
-        const boidMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide });
-        const wireMat = new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.7 });
+        // Solid Body Material with PolygonOffset to fix Z-fighting with wireframe
+        const boidMat = new THREE.MeshStandardMaterial({ 
+            color: 0x222222, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide,
+            polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+        });
+        
+        // Sharp black wireframe overlay
+        const wireMat = new THREE.MeshBasicMaterial({ 
+            color: 0x000000, wireframe: true, transparent: true, opacity: 0.8 
+        });
 
         const shaderInjector = (shader, isEmissive) => {
             shader.vertexShader = `
@@ -268,7 +342,7 @@
             color: 0xffaa00, emissive: 0xffaa00, emissiveIntensity: 2.0, transparent: true, opacity: 0.8
         });
         const anomalyMesh = new THREE.Mesh(anomalyGeo, anomalyMat);
-        boidGroup.add(anomalyMesh); // Add to boidGroup so local coordinates match
+        boidGroup.add(anomalyMesh); 
 
         function relocateAnomaly() {
             anomalyMesh.position.set(
@@ -276,7 +350,6 @@
                 (Math.random() - 0.5) * 8,
                 (Math.random() - 0.5) * 12
             );
-            // Flash effect
             anomalyMat.emissive.setHex(0xffffff);
             anomalyMat.emissiveIntensity = 10.0;
             anomalyMesh.scale.set(1.5, 1.5, 1.5);
@@ -464,6 +537,9 @@
             const time = clock.getElapsedTime();
             frameCounter++;
 
+            if (sessionStartTime === null) sessionStartTime = time;
+            const sessionElapsed = time - sessionStartTime;
+
             // Anomaly visual logic
             anomalyMesh.rotation.y += rawDt;
             anomalyMesh.rotation.x += rawDt * 0.5;
@@ -479,29 +555,45 @@
 
             let centerOfMass = new THREE.Vector3();
             let boidsInAnomaly = 0;
+            let avgVelocity = 0;
 
             for(let b of boids) {
                 centerOfMass.add(b.position);
-                // Check scoring collision
-                if (b.position.distanceToSquared(anomalyMesh.position) < 2.25) { // 1.5 radius squared
+                avgVelocity += b.velocity.length();
+                if (b.position.distanceToSquared(anomalyMesh.position) < 2.25) { 
                     boidsInAnomaly++;
                 }
             }
             centerOfMass.divideScalar(BOID_COUNT);
+            avgVelocity /= BOID_COUNT;
+
+            const comWorld = boidGroup.localToWorld(centerOfMass.clone());
+            const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+
+            // --- SPATIAL AUDIO UPDATE ---
+            if (audioInitialized && audioCtx.state === 'running') {
+                // Map velocity to filter frequency (makes it roar when they fly fast)
+                const targetFreq = 200 + (avgVelocity * 10000);
+                filter.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.1);
+                
+                // Map distance to volume (louder when closer)
+                const distToCam = camPos.distanceTo(comWorld);
+                // Ramp volume up sharply as they approach, cap at 1.0
+                const targetVol = Math.max(0, Math.min(1.0 - (distToCam / 25.0), 1.0));
+                gainNode.gain.setTargetAtTime(targetVol, audioCtx.currentTime, 0.1);
+            }
 
             // Update UI & Game Logic
-            if (boidsInAnomaly !== currentProgress) {
+            if (boidsInAnomaly !== currentProgress || frameCounter % 30 === 0) {
                 currentProgress = boidsInAnomaly;
-                updateHUD(currentScore, currentProgress);
+                updateHUD(currentScore, currentProgress, totalCaptured, formatTime(sessionElapsed));
             }
 
             if (currentProgress >= THRESHOLD) {
                 currentScore++;
+                totalCaptured += currentProgress;
                 relocateAnomaly();
             }
-            
-            const comWorld = boidGroup.localToWorld(centerOfMass.clone());
-            const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
 
             const localHands = [];
             hands.forEach(hand => {
