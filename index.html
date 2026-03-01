@@ -27,7 +27,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Open BOTH palms and face flock to pull them to you.</div>
+    <div id="info">VR/AR Boids System<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -41,7 +41,7 @@
         scene.fog = new THREE.FogExp2(0x010103, 0.035);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
-        camera.position.set(0, 1.6, 3); // Desktop fallback height
+        camera.position.set(0, 1.6, 3);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -59,19 +59,13 @@
         document.body.appendChild(arBtn);
 
         // --- ENVIRONMENT SETUP ---
-        // Solid Floor (VR only)
         const floorGeo = new THREE.PlaneGeometry(200, 200);
-        const floorMat = new THREE.MeshStandardMaterial({ 
-            color: 0x020205, 
-            roughness: 0.9, 
-            metalness: 0.1 
-        });
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x020205, roughness: 0.9, metalness: 0.1 });
         const floor = new THREE.Mesh(floorGeo, floorMat);
         floor.rotation.x = -Math.PI / 2;
         floor.position.y = 0; 
         scene.add(floor);
 
-        // AR Transparent Grid
         const arGrid = new THREE.GridHelper(20, 20, 0x00ffff, 0x00ffff);
         arGrid.position.y = 0.01; 
         arGrid.material.transparent = true;
@@ -79,7 +73,6 @@
         arGrid.visible = false;
         scene.add(arGrid);
 
-        // Night Sky (Stars)
         const starsGeo = new THREE.BufferGeometry();
         const starsCount = 3000;
         const posArray = new Float32Array(starsCount * 3);
@@ -87,16 +80,10 @@
             posArray[i] = (Math.random() - 0.5) * 150;
         }
         starsGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-        const starsMat = new THREE.PointsMaterial({
-            size: 0.1, 
-            color: 0xffffff, 
-            transparent: true, 
-            opacity: 0.8
-        });
+        const starsMat = new THREE.PointsMaterial({ size: 0.1, color: 0xffffff, transparent: true, opacity: 0.8 });
         const starMesh = new THREE.Points(starsGeo, starsMat);
         scene.add(starMesh);
 
-        // Handle Passthrough (AR) vs VR modes
         renderer.xr.addEventListener('sessionstart', () => {
             const session = renderer.xr.getSession();
             if (session.mode === 'immersive-ar') {
@@ -130,14 +117,11 @@
         // --- HAND TRACKING SETUP ---
         const handModelFactory = new XRHandModelFactory();
         const hands = [];
+        const previousHandPositions = [new THREE.Vector3(), new THREE.Vector3()];
         
         const handMaterial = new THREE.MeshStandardMaterial({
-            color: 0x00ffff,
-            emissive: 0x00aaff,
-            emissiveIntensity: 0.8,
-            wireframe: true,
-            transparent: true,
-            opacity: 0.6
+            color: 0x00ffff, emissive: 0x00aaff, emissiveIntensity: 0.8,
+            wireframe: true, transparent: true, opacity: 0.6
         });
 
         for (let i = 0; i < 2; i++) {
@@ -148,50 +132,122 @@
             hands.push(hand);
         }
 
-        // Dual Tether Lines (Using LineSegments for two distinct lines)
         const tetherGeo = new THREE.BufferGeometry().setFromPoints([
             new THREE.Vector3(), new THREE.Vector3(), 
             new THREE.Vector3(), new THREE.Vector3()
         ]);
-        const tetherMat = new THREE.LineBasicMaterial({ 
-            color: 0x00ffff, 
-            transparent: true, 
-            opacity: 0,
-            blending: THREE.AdditiveBlending 
-        });
+        const tetherMat = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending });
         const tetherLine = new THREE.LineSegments(tetherGeo, tetherMat);
         scene.add(tetherLine);
 
-        // --- BOID SYSTEM ---
-        const BOID_COUNT = 500; // Increased by 25%
-        const FLOCK_BOUNDS = 15; // Expanded bounds for bigger flights
+        // --- BOID SYSTEM (INSTANCED 5000) ---
+        const BOID_COUNT = 5000; 
+        const FLOCK_BOUNDS = 15; 
         
-        // Decreased size by 25%
-        const wingGeo = new THREE.BoxGeometry(0.225, 0.015, 0.1125);
-        wingGeo.translate(0.1125, 0, 0); 
+        // A single geometry spanning both wings. widthSegments = 2 creates a hinge at x=0.
+        const boidGeo = new THREE.BoxGeometry(0.45, 0.015, 0.1125, 2, 1, 1);
+        
+        // Custom Shader Material to offload wing flapping and gradients to the GPU
+        const boidMat = new THREE.MeshStandardMaterial({
+            color: 0xffffff, roughness: 0.2, metalness: 0.8
+        });
+
+        boidMat.onBeforeCompile = (shader) => {
+            shader.vertexShader = `
+                attribute float aFlapPhase;
+                attribute vec3 aGlowColor;
+                varying vec3 vGlowColor;
+                ${shader.vertexShader}
+            `.replace(
+                `#include <beginnormal_vertex>`,
+                `
+                // Bend normals precisely with the flapping wing geometry to retain proper lighting
+                float angle_n = sign(position.x) * sin(aFlapPhase) * 0.6;
+                float cn = cos(angle_n);
+                float sn = sin(angle_n);
+                vec3 objectNormal = vec3(normal);
+                float nX = objectNormal.x * cn - objectNormal.y * sn;
+                float nY = objectNormal.x * sn + objectNormal.y * cn;
+                objectNormal.x = nX;
+                objectNormal.y = nY;
+                `
+            ).replace(
+                `#include <begin_vertex>`,
+                `
+                vec3 transformed = vec3(position);
+                // Hinge at x=0. sign(position.x) flips the angle for Left vs Right wing.
+                float flapAngle = sin(aFlapPhase) * 0.6;
+                float angle = sign(position.x) * flapAngle; 
+                float c = cos(angle);
+                float s = sin(angle);
+                
+                // Rotate vertices along Z-axis
+                float newX = transformed.x * c - transformed.y * s;
+                float newY = transformed.x * s + transformed.y * c;
+                transformed.x = newX;
+                transformed.y = newY;
+                
+                vGlowColor = aGlowColor;
+                `
+            );
+            shader.fragmentShader = `
+                varying vec3 vGlowColor;
+                ${shader.fragmentShader}
+            `.replace(
+                `#include <emissivemap_fragment>`,
+                `
+                #include <emissivemap_fragment>
+                totalEmissiveRadiance = vGlowColor; // Override emissive with instanced color
+                `
+            );
+        };
 
         const boids = [];
         const boidGroup = new THREE.Group();
-        // Placed much further away and higher up in the sky
         boidGroup.position.set(0, 4, -10); 
         scene.add(boidGroup);
 
+        const instancedMesh = new THREE.InstancedMesh(boidGeo, boidMat, BOID_COUNT);
+        instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        boidGroup.add(instancedMesh);
+
+        // GPU attribute arrays
+        const flapPhases = new Float32Array(BOID_COUNT);
+        const glowColors = new Float32Array(BOID_COUNT * 3);
+        
+        // Corrected: Attributes must be set on the geometry, not the mesh directly
+        instancedMesh.geometry.setAttribute('aFlapPhase', new THREE.InstancedBufferAttribute(flapPhases, 1));
+        instancedMesh.geometry.setAttribute('aGlowColor', new THREE.InstancedBufferAttribute(glowColors, 3));
+
         const flockTarget = new THREE.Vector3();
+        let shockwaves = []; 
+
+        // --- GC OPTIMIZATION: SHARED GLOBAL VECTORS ---
+        // Eliminates 20,000+ vector allocations per frame from the physics loop.
+        const _align = new THREE.Vector3();
+        const _cohesion = new THREE.Vector3();
+        const _sep = new THREE.Vector3();
+        const _diff = new THREE.Vector3();
+        const _tempV = new THREE.Vector3();
+        const _vortex = new THREE.Vector3();
+        const _zero = new THREE.Vector3(0,0,0);
+        const _upAxis = new THREE.Vector3(0,1,0);
+        const _right = new THREE.Vector3();
+        const _up = new THREE.Vector3();
+        const _lookMatrix = new THREE.Matrix4();
+        const _targetQuat = new THREE.Quaternion();
+        const _dummy = new THREE.Object3D();
+        const _tempColor = new THREE.Color();
 
         class Boid {
             constructor(id) {
                 this.id = id;
                 this.position = new THREE.Vector3(
-                    (Math.random() - 0.5) * 8,
-                    (Math.random() - 0.5) * 8,
-                    (Math.random() - 0.5) * 8
+                    (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8
                 );
-                this.velocity = new THREE.Vector3(
-                    (Math.random() - 0.5),
-                    (Math.random() - 0.5),
-                    (Math.random() - 0.5)
-                ).normalize();
+                this.velocity = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).normalize();
                 this.acceleration = new THREE.Vector3();
+                this.quaternion = new THREE.Quaternion();
 
                 this.maxSpeed = 0.05 + Math.random() * 0.03; 
                 this.maxForce = 0.0008 + Math.random() * 0.0004; 
@@ -199,34 +255,15 @@
                 this.separationRadius = 0.8 + Math.random() * 0.4; 
                 this.agility = 0.8 + Math.random() * 0.4;
 
-                this.mesh = new THREE.Group();
-                this.material = new THREE.MeshStandardMaterial({
-                    color: 0xffffff,
-                    emissive: 0xffffff,
-                    emissiveIntensity: 1.0,
-                    roughness: 0.2,
-                    metalness: 0.8
-                });
-
-                this.wingL = new THREE.Mesh(wingGeo, this.material);
-                this.wingR = new THREE.Mesh(wingGeo, this.material);
-                this.wingR.scale.x = -1;
-
-                this.mesh.add(this.wingL);
-                this.mesh.add(this.wingR);
-                this.mesh.position.copy(this.position);
-                boidGroup.add(this.mesh);
-
                 this.flapPhase = Math.random() * Math.PI * 2;
                 this.rollAngle = 0;
             }
 
-            flock(boids, startIndex, count) {
-                let alignment = new THREE.Vector3();
-                let cohesion = new THREE.Vector3();
-                let separation = new THREE.Vector3();
-                let alignTotal = 0;
-                let sepTotal = 0;
+            flock(boids, startIndex, count, isTornado, localCenter, localHands) {
+                _align.set(0,0,0);
+                _cohesion.set(0,0,0);
+                _sep.set(0,0,0);
+                let alignTotal = 0, sepTotal = 0;
 
                 const pRadSq = this.perceptionRadius * this.perceptionRadius;
                 const sRadSq = this.separationRadius * this.separationRadius;
@@ -239,96 +276,103 @@
                     const distSq = this.position.distanceToSquared(other.position);
 
                     if (distSq > 0 && distSq < pRadSq) {
-                        alignment.add(other.velocity);
-                        cohesion.add(other.position);
+                        _align.add(other.velocity);
+                        _cohesion.add(other.position);
                         alignTotal++;
                     }
-                    
                     if (distSq > 0 && distSq < sRadSq) {
-                        let diff = new THREE.Vector3().subVectors(this.position, other.position);
-                        diff.divideScalar(distSq); 
-                        separation.add(diff);
+                        _diff.subVectors(this.position, other.position);
+                        _diff.divideScalar(distSq); 
+                        _sep.add(_diff);
                         sepTotal++;
                     }
                 }
 
                 if (alignTotal > 0) {
-                    alignment.divideScalar(alignTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
-                    cohesion.divideScalar(alignTotal).sub(this.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
+                    _align.divideScalar(alignTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
+                    _cohesion.divideScalar(alignTotal).sub(this.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
                 }
-                
                 if (sepTotal > 0) {
-                    separation.divideScalar(sepTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
+                    _sep.divideScalar(sepTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
                 }
 
-                this.acceleration.add(alignment.multiplyScalar(1.2));
-                this.acceleration.add(cohesion.multiplyScalar(0.8));
-                this.acceleration.add(separation.multiplyScalar(2.0));
-                
-                // Pull towards current global target
-                const steerToTarget = new THREE.Vector3().subVectors(flockTarget, this.position);
-                steerToTarget.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 0.4);
-                this.acceleration.add(steerToTarget);
+                if (isTornado) {
+                    _diff.subVectors(localCenter, this.position);
+                    _tempV.set(_diff.x, 0, _diff.z); 
+                    _vortex.crossVectors(_upAxis, _tempV).normalize(); 
+                    
+                    _vortex.multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 8.0);
+                    _tempV.copy(_upAxis).multiplyScalar(this.maxForce * 2.0); 
+                    _diff.normalize().multiplyScalar(this.maxForce * 1.5); 
 
+                    this.acceleration.add(_vortex).add(_tempV).add(_diff);
+                    this.acceleration.add(_sep.multiplyScalar(3.0)); 
+                } else {
+                    this.acceleration.add(_align.multiplyScalar(1.2));
+                    this.acceleration.add(_cohesion.multiplyScalar(0.8));
+                    this.acceleration.add(_sep.multiplyScalar(2.0));
+                    
+                    _tempV.subVectors(flockTarget, this.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 0.4);
+                    this.acceleration.add(_tempV);
+                }
+
+                // Shockwaves
+                for(let i=0; i<shockwaves.length; i++) {
+                    const sw = shockwaves[i];
+                    const distSq = this.position.distanceToSquared(sw.pos);
+                    if (distSq < sw.radius * sw.radius) {
+                        _tempV.subVectors(this.position, sw.pos).normalize().multiplyScalar(this.maxForce * 30.0 * sw.life);
+                        this.acceleration.add(_tempV);
+                    }
+                }
+
+                // Hard Deck (Ground Anti-Clip)
+                if (this.position.y < -3.8) {
+                    _tempV.copy(_upAxis).multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 8.0);
+                    this.acceleration.add(_tempV);
+                }
+
+                // Soft Boundary
                 const distFromCenter = this.position.length();
                 if (distFromCenter > FLOCK_BOUNDS) {
-                    const steerToCenter = new THREE.Vector3().subVectors(new THREE.Vector3(0,0,0), this.position);
-                    steerToCenter.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
-                    this.acceleration.add(steerToCenter);
+                    _tempV.subVectors(_zero, this.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
+                    this.acceleration.add(_tempV);
                 }
 
-                // --- HAND REPULSION LOGIC ---
-                hands.forEach(hand => {
-                    // Extract reliable physical position using wrist joint if available
-                    let handPos = new THREE.Vector3();
-                    if (hand.joints && hand.joints['wrist']) {
-                        handPos.setFromMatrixPosition(hand.joints['wrist'].matrixWorld);
-                    } else {
-                        handPos.setFromMatrixPosition(hand.matrixWorld);
+                // Local Hand Repulsion (Pre-Calculated outside loop)
+                for(let i=0; i<localHands.length; i++) {
+                    const distSq = this.position.distanceToSquared(localHands[i]);
+                    if (distSq < 2.25) { 
+                        _tempV.subVectors(this.position, localHands[i]).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 12.0);
+                        this.acceleration.add(_tempV);
                     }
-
-                    if (handPos.lengthSq() > 0.01) {
-                        const localHandPos = boidGroup.worldToLocal(handPos.clone());
-                        const distSq = this.position.distanceToSquared(localHandPos);
-                        
-                        // Tight 1.5m radius repulsion shield around hands
-                        if (distSq < 2.25) { 
-                            const push = new THREE.Vector3().subVectors(this.position, localHandPos);
-                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 12.0);
-                            this.acceleration.add(push);
-                        }
-                    }
-                });
+                }
             }
 
             update(dt, time) {
-                this.velocity.add(this.acceleration);
+                this.velocity.add(this.acceleration.multiplyScalar(dt * 20.0));
                 this.velocity.clampLength(0, this.maxSpeed);
-                this.position.add(this.velocity);
+                
+                _tempV.copy(this.velocity).multiplyScalar(dt * 20.0);
+                this.position.add(_tempV);
                 this.acceleration.set(0, 0, 0);
 
-                this.mesh.position.copy(this.position);
-
-                const right = new THREE.Vector3(0, 1, 0).cross(this.velocity).normalize();
-                const up = new THREE.Vector3().crossVectors(this.velocity, right).normalize();
-                
-                const lookMatrix = new THREE.Matrix4().lookAt(new THREE.Vector3(), this.velocity, up);
-                const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(lookMatrix);
-                
-                const lateralAcc = right.dot(this.velocity); 
-                const targetRoll = Math.max(Math.min(lateralAcc * -15.0 * this.agility, Math.PI/3), -Math.PI/3);
-                
-                this.rollAngle += (targetRoll - this.rollAngle) * 0.1;
-                
-                this.mesh.quaternion.slerp(targetQuaternion, 0.1);
-                this.mesh.rotateZ(this.rollAngle);
+                if (this.velocity.lengthSq() > 0.0001) {
+                    _right.crossVectors(_upAxis, this.velocity).normalize();
+                    _up.crossVectors(this.velocity, _right).normalize();
+                    _lookMatrix.lookAt(_zero, this.velocity, _up);
+                    _targetQuat.setFromRotationMatrix(_lookMatrix);
+                    
+                    const lateralAcc = _right.dot(this.velocity); 
+                    const targetRoll = Math.max(Math.min(lateralAcc * -15.0 * this.agility, Math.PI/3), -Math.PI/3);
+                    
+                    if (dt > 0.01) this.rollAngle += (targetRoll - this.rollAngle) * 0.1;
+                    
+                    this.quaternion.slerp(_targetQuat, 0.1);
+                }
 
                 const speedMult = (this.velocity.length() / this.maxSpeed) * 30.0;
                 this.flapPhase += dt * speedMult;
-                
-                const flapAngle = Math.sin(this.flapPhase) * 0.6;
-                this.wingL.rotation.z = flapAngle;
-                this.wingR.rotation.z = -flapAngle;
             }
         }
 
@@ -336,27 +380,31 @@
             boids.push(new Boid(i));
         }
 
+        function getJointPos(hand, jointName) {
+            if (hand.joints && hand.joints[jointName]) {
+                return new THREE.Vector3().setFromMatrixPosition(hand.joints[jointName].matrixWorld);
+            }
+            return null;
+        }
+
         // --- RENDER LOOP ---
         const clock = new THREE.Clock();
         let frameCounter = 0;
         const colorCyan = new THREE.Color(0x00ffff);
         const colorMagenta = new THREE.Color(0xff00ff);
+        let globalTimeScale = 1.0;
 
         renderer.setAnimationLoop(() => {
-            const dt = Math.min(clock.getDelta(), 0.05); 
+            let rawDt = Math.min(clock.getDelta(), 0.05); 
             const time = clock.getElapsedTime();
             frameCounter++;
 
-            // Force custom wireframe material on hands
             hands.forEach(hand => {
                 hand.traverse((child) => {
-                    if (child.isMesh && child.material !== handMaterial) {
-                        child.material = handMaterial;
-                    }
+                    if (child.isMesh && child.material !== handMaterial) child.material = handMaterial;
                 });
             });
 
-            // Calculate Flock Center of Mass 
             let centerOfMass = new THREE.Vector3();
             for(let b of boids) centerOfMass.add(b.position);
             centerOfMass.divideScalar(BOID_COUNT);
@@ -364,101 +412,151 @@
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
             const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
 
-            // --- TWO-HAND PALM DETECTION & GUIDANCE ---
-            let activePullingHands = 0;
-            let activeHandPositions = [];
-
-            hands.forEach((hand) => {
-                let handWorldPos = new THREE.Vector3();
-                if (hand.joints && hand.joints['wrist']) {
-                    handWorldPos.setFromMatrixPosition(hand.joints['wrist'].matrixWorld);
-                } else {
-                    handWorldPos.setFromMatrixPosition(hand.matrixWorld);
-                }
-                
-                if (handWorldPos.lengthSq() < 0.01) return;
-
-                // 1. Check if Palm is Open
-                let palmOpen = false;
-                if (hand.joints && hand.joints['thumb-tip'] && hand.joints['pinky-finger-tip']) {
-                    const thumb = new THREE.Vector3().setFromMatrixPosition(hand.joints['thumb-tip'].matrixWorld);
-                    const pinky = new THREE.Vector3().setFromMatrixPosition(hand.joints['pinky-finger-tip'].matrixWorld);
-                    // Relaxed to 10cm to ensure varied hand sizes trigger it reliably
-                    if (thumb.distanceTo(pinky) > 0.10) {
-                        palmOpen = true;
-                    }
-                } else {
-                    palmOpen = true; 
-                }
-
-                // 2. Direct Line-of-Sight Aiming (Eliminates tracking offset)
-                // Creates a vector from your eyes through your hand to find where you are pointing
-                const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
-                const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
-                const dot = aimDir.dot(toFlock);
-
-                if (palmOpen && dot > 0.6) { // 0.6 is forgiving enough for dual-hand alignment
-                    activePullingHands++;
-                    activeHandPositions.push(handWorldPos);
+            // Pre-calculate localized hand positions ONCE per frame
+            const localHands = [];
+            hands.forEach(hand => {
+                let handPos = getJointPos(hand, 'wrist') || new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+                if (handPos.lengthSq() > 0.01) {
+                    localHands.push(boidGroup.worldToLocal(handPos.clone()));
                 }
             });
 
-            const isPulling = (activePullingHands === 2);
+            // --- GESTURE STATE MACHINE ---
+            let activePullingHands = 0;
+            let isTornado = false;
+            let targetTimeScale = 1.0;
+            let activeHandPositions = [];
+
+            let leftIndex = getJointPos(hands[0], 'index-finger-tip');
+            let rightIndex = getJointPos(hands[1], 'index-finger-tip');
+            if (leftIndex && rightIndex && leftIndex.distanceTo(rightIndex) < 0.05) {
+                targetTimeScale = 0.005; 
+            }
+
+            hands.forEach((hand, i) => {
+                let handWorldPos = getJointPos(hand, 'wrist') || new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+                if (handWorldPos.lengthSq() < 0.01) return;
+
+                let velVector = new THREE.Vector3().subVectors(handWorldPos, previousHandPositions[i]);
+                let speed = velVector.length() / rawDt;
+                previousHandPositions[i].copy(handWorldPos);
+
+                let thumbTip = getJointPos(hand, 'thumb-tip');
+                let indexTip = getJointPos(hand, 'index-finger-tip');
+                let pinkyTip = getJointPos(hand, 'pinky-finger-tip');
+                let wrist = getJointPos(hand, 'wrist');
+
+                if (thumbTip && indexTip && pinkyTip && wrist) {
+                    if (thumbTip.distanceTo(indexTip) < 0.03) {
+                        isTornado = true;
+                    }
+
+                    let isFist = indexTip.distanceTo(wrist) < 0.12 && pinkyTip.distanceTo(wrist) < 0.12;
+                    if (isFist && speed > 2.0 && rawDt > 0.001) { 
+                        shockwaves.push({
+                            pos: boidGroup.worldToLocal(handWorldPos.clone()),
+                            radius: 1.0, life: 1.0, expansion: 15.0
+                        });
+                    }
+
+                    let palmOpen = thumbTip.distanceTo(pinkyTip) > 0.10;
+                    const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
+                    const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
+                    
+                    if (palmOpen && aimDir.dot(toFlock) > 0.6) {
+                        activePullingHands++;
+                        activeHandPositions.push(handWorldPos);
+                    }
+                }
+            });
+
+            for (let i = shockwaves.length - 1; i >= 0; i--) {
+                let sw = shockwaves[i];
+                sw.radius += sw.expansion * rawDt;
+                sw.life -= rawDt * 1.5; 
+                if (sw.life <= 0) shockwaves.splice(i, 1);
+            }
+
+            globalTimeScale += (targetTimeScale - globalTimeScale) * 0.1;
+            let dt = rawDt * globalTimeScale;
+
+            const isPulling = (activePullingHands === 2) && !isTornado;
 
             if (isPulling) {
-                // Rainbow Phase activates on both hands
                 handMaterial.color.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
                 handMaterial.emissive.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
                 
-                // Pull directly to user's headset (creates wrap-around murmuration)
                 const pullTargetWorld = camPos.clone();
                 flockTarget.lerp(boidGroup.worldToLocal(pullTargetWorld), 0.05);
 
-                // Render dual tethers
                 tetherLine.geometry.setFromPoints([
                     activeHandPositions[0], comWorld,
                     activeHandPositions[1], comWorld
                 ]);
                 tetherMat.opacity = Math.min(tetherMat.opacity + 0.1, 0.8);
                 tetherMat.color.copy(handMaterial.color);
+            } else if (isTornado) {
+                handMaterial.color.setHex(0xaa00ff);
+                handMaterial.emissive.setHex(0xdd55ff);
+                tetherMat.opacity = Math.max(tetherMat.opacity - 0.1, 0);
             } else {
-                // Default Cyan Phase
                 handMaterial.color.setHex(0x00ffff);
                 handMaterial.emissive.setHex(0x00aaff);
                 
-                // Far Idle Orbit
                 const idleTarget = new THREE.Vector3(
-                    Math.sin(time * 0.3) * 8,
-                    Math.sin(time * 0.2) * 4,
-                    Math.cos(time * 0.25) * 6
+                    Math.sin(time * 0.3) * 8, Math.sin(time * 0.2) * 4, Math.cos(time * 0.25) * 6
                 );
                 flockTarget.lerp(idleTarget, 0.02);
                 tetherMat.opacity = Math.max(tetherMat.opacity - 0.1, 0);
             }
 
-            // Light Orbits
+            if (globalTimeScale < 0.1) {
+                handMaterial.color.setHex(0xffffff);
+                handMaterial.emissive.setHex(0x00ffff);
+            }
+
             lightCyan.position.set(Math.cos(time * 0.5) * 15, Math.sin(time * 0.3) * 5 + 5, Math.sin(time * 0.5) * 15 - 5);
             lightMagenta.position.set(Math.cos(time * 0.4 + Math.PI) * 15, Math.cos(time * 0.6) * 5 + 5, Math.sin(time * 0.4 + Math.PI) * 15 - 5);
 
             const pulse = 0.6 + 0.4 * Math.sin(time * 2.0);
             const phaseShift = time * 0.2; 
 
-            // Update Physics
-            for (let i = 0; i < boids.length; i++) {
+            // Execute Batch Updates
+            for (let i = 0; i < BOID_COUNT; i++) {
                 const boid = boids[i];
                 
-                boid.flock(boids, (frameCounter * 40) % BOID_COUNT, 40);
+                if (globalTimeScale > 0.1) {
+                    boid.flock(boids, (frameCounter * 40) % BOID_COUNT, 40, isTornado, centerOfMass, localHands);
+                }
                 boid.update(dt, time);
 
+                // Instanced Mesh Matrix Alignment
+                _dummy.position.copy(boid.position);
+                _dummy.quaternion.copy(boid.quaternion);
+                _dummy.rotateZ(boid.rollAngle);
+                _dummy.updateMatrix();
+                instancedMesh.setMatrixAt(i, _dummy.matrix);
+
+                // GPU Wing Phase Injection
+                flapPhases[i] = boid.flapPhase;
+
+                // GPU Color Interpolation
                 const distToCenter = boid.position.distanceTo(centerOfMass);
                 const normalizedDist = Math.max(0, Math.min(distToCenter / (FLOCK_BOUNDS * 0.8), 1.0));
                 
-                const boidColor = new THREE.Color().lerpColors(colorCyan, colorMagenta, normalizedDist);
-                boidColor.offsetHSL(phaseShift % 1.0, 0, 0);
-
-                boid.material.emissive.copy(boidColor);
-                boid.material.emissiveIntensity = pulse * (0.8 + 0.2 * Math.random()); 
+                _tempColor.lerpColors(colorCyan, colorMagenta, normalizedDist);
+                _tempColor.offsetHSL(phaseShift % 1.0, 0, 0);
+                
+                const glowMult = pulse * (0.8 + 0.2 * boid.agility); 
+                glowColors[i*3] = _tempColor.r * glowMult;
+                glowColors[i*3+1] = _tempColor.g * glowMult;
+                glowColors[i*3+2] = _tempColor.b * glowMult;
             }
+
+            // Flush arrays to GPU
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            instancedMesh.geometry.attributes.aFlapPhase.needsUpdate = true;
+            instancedMesh.geometry.attributes.aGlowColor.needsUpdate = true;
 
             renderer.render(scene, camera);
         });
@@ -468,7 +566,6 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
-
     </script>
 </body>
 </html>
