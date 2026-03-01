@@ -32,7 +32,7 @@
     </script>
 </head>
 <body>
-    <div id="info">BiroidsXR<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br>HUD: Look at Left Wrist<br><br><b>GOAL: Herd flock through the Nexus Core</b></div>
+    <div id="info">BiroidsXR<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br>HUD: 'Call' Gesture (Left Hand)<br><br><b>GOAL: Herd flock through the Nexus Core</b></div>
     <div id="audio-prompt">Click anywhere or enter VR to enable Spatial Audio</div>
 
     <script type="module">
@@ -153,6 +153,13 @@
         const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.30, 0.15), hudMat);
         hudMesh.visible = false;
         scene.add(hudMesh);
+
+        // Left Hand HUD Indicator Ring
+        const hudIndicator = new THREE.Mesh(
+            new THREE.RingGeometry(0.04, 0.045, 32),
+            new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
+        );
+        scene.add(hudIndicator);
 
         let currentScore = 0;
         let currentProgress = 0;
@@ -612,7 +619,7 @@
             for(let b of boids) {
                 centerOfMass.add(b.position);
                 avgVelocity += b.velocity.length();
-                if (b.position.distanceToSquared(nexusGroup.position) < 3.0) { // Slightly larger radius for the rings
+                if (b.position.distanceToSquared(nexusGroup.position) < 3.0) { 
                     boidsInNexus++;
                 }
             }
@@ -621,38 +628,6 @@
 
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
             const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-
-            // --- HUD SMARTWATCH GESTURE (Look at left wrist) ---
-            let leftWristPos = getJointPos(hands[0], 'wrist');
-            let isLookingAtWatch = false;
-
-            if (leftWristPos && leftWristPos.lengthSq() > 0.01) {
-                const distToFace = camPos.distanceTo(leftWristPos);
-                // Check if hand is raised close to the face
-                if (distToFace > 0.2 && distToFace < 0.7) {
-                    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-                    const toHand = new THREE.Vector3().subVectors(leftWristPos, camPos).normalize();
-                    // Check if camera is pointing generally towards the hand
-                    if (camForward.dot(toHand) > 0.6) {
-                        isLookingAtWatch = true;
-                    }
-                }
-            }
-
-            const hudOpacityTarget = isLookingAtWatch ? 0.95 : 0.0;
-            hudMat.opacity += (hudOpacityTarget - hudMat.opacity) * 0.1;
-            
-            if (hudMat.opacity > 0.01) {
-                hudMesh.visible = true;
-                // Billboard the HUD above the wrist, facing the user
-                if (leftWristPos) {
-                    hudMesh.position.copy(leftWristPos);
-                    hudMesh.position.y += 0.12; 
-                    hudMesh.lookAt(camPos);
-                }
-            } else {
-                hudMesh.visible = false;
-            }
 
             // --- SPATIAL AUDIO UPDATE ---
             if (audioInitialized && flockAudio.isPlaying) {
@@ -692,6 +667,7 @@
             // --- GESTURE STATE MACHINE ---
             let activePullingHands = 0;
             let isTornado = false;
+            let isCallGesture = false;
             let targetTimeScale = 1.0;
             let activeHandPositions = [];
 
@@ -705,16 +681,39 @@
                 let handWorldPos = getJointPos(hand, 'wrist') || new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
                 if (handWorldPos.lengthSq() < 0.01) return;
 
+                // Sync HUD Indicator to Left Hand
+                if (i === 0) {
+                    hudIndicator.position.copy(handWorldPos);
+                    hudIndicator.lookAt(camPos);
+                    hudIndicator.scale.setScalar(1.0 + Math.sin(time * 5.0) * 0.1); // Breathing effect
+                }
+
                 let velVector = new THREE.Vector3().subVectors(handWorldPos, previousHandPositions[i]);
                 let speed = velVector.length() / rawDt;
                 previousHandPositions[i].copy(handWorldPos);
 
                 let thumbTip = getJointPos(hand, 'thumb-tip');
                 let indexTip = getJointPos(hand, 'index-finger-tip');
+                let middleTip = getJointPos(hand, 'middle-finger-tip');
+                let ringTip = getJointPos(hand, 'ring-finger-tip');
                 let pinkyTip = getJointPos(hand, 'pinky-finger-tip');
                 let wrist = getJointPos(hand, 'wrist');
 
-                if (thumbTip && indexTip && pinkyTip && wrist) {
+                if (thumbTip && indexTip && middleTip && ringTip && pinkyTip && wrist) {
+                    
+                    // Call Gesture Evaluation (Left hand only)
+                    if (i === 0) {
+                        let thumbExt = thumbTip.distanceTo(wrist) > 0.09;
+                        let pinkyExt = pinkyTip.distanceTo(wrist) > 0.09;
+                        let indexFolded = indexTip.distanceTo(wrist) < 0.08;
+                        let middleFolded = middleTip.distanceTo(wrist) < 0.08;
+                        let ringFolded = ringTip.distanceTo(wrist) < 0.08;
+
+                        if (thumbExt && pinkyExt && indexFolded && middleFolded && ringFolded) {
+                            isCallGesture = true;
+                        }
+                    }
+
                     if (thumbTip.distanceTo(indexTip) < 0.03) {
                         isTornado = true;
                     }
@@ -728,7 +727,7 @@
                     }
 
                     // Disable pull mechanics if explicitly looking at watch to avoid conflicting intent
-                    if (!isLookingAtWatch || i !== 0) {
+                    if (!isCallGesture || i !== 0) {
                         let palmOpen = thumbTip.distanceTo(pinkyTip) > 0.10;
                         const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
                         const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
@@ -740,6 +739,22 @@
                     }
                 }
             });
+
+            // HUD Fade Logic tied to Call Gesture
+            const hudOpacityTarget = isCallGesture ? 0.95 : 0.0;
+            hudMat.opacity += (hudOpacityTarget - hudMat.opacity) * 0.1;
+            
+            if (hudMat.opacity > 0.01) {
+                hudMesh.visible = true;
+                let leftWristPos = getJointPos(hands[0], 'wrist');
+                if (leftWristPos) {
+                    hudMesh.position.copy(leftWristPos);
+                    hudMesh.position.y += 0.15; 
+                    hudMesh.lookAt(camPos);
+                }
+            } else {
+                hudMesh.visible = false;
+            }
 
             for (let i = shockwaves.length - 1; i >= 0; i--) {
                 let sw = shockwaves[i];
