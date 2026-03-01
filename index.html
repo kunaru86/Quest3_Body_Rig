@@ -27,30 +27,54 @@
     </script>
 </head>
 <body>
-    <div id="info">VR Boids System<br>Enter VR to enable 3D tracking</div>
+    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)</div>
 
     <script type="module">
         import * as THREE from 'three';
         import { VRButton } from 'three/addons/webxr/VRButton.js';
+        import { ARButton } from 'three/addons/webxr/ARButton.js';
+        import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
         // --- CORE SETUP ---
         const scene = new THREE.Scene();
-        // Deep void background with exponential fog
         scene.background = new THREE.Color(0x030308);
         scene.fog = new THREE.FogExp2(0x030308, 0.035);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
         camera.position.set(0, 5, 15);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Cap pixel ratio for XR perf
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.xr.enabled = true;
         document.body.appendChild(renderer.domElement);
-        document.body.appendChild(VRButton.createButton(renderer));
+
+        // Session init requesting hand tracking
+        const xrOptions = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
+        
+        const vrBtn = VRButton.createButton(renderer, xrOptions);
+        const arBtn = ARButton.createButton(renderer, xrOptions);
+        
+        // Stack the buttons
+        arBtn.style.bottom = '80px';
+        document.body.appendChild(vrBtn);
+        document.body.appendChild(arBtn);
+
+        // Handle Passthrough (AR) vs VR modes
+        renderer.xr.addEventListener('sessionstart', () => {
+            const session = renderer.xr.getSession();
+            if (session.mode === 'immersive-ar') {
+                scene.background = null;
+                scene.fog = null;
+                gridHelper.visible = false;
+            } else {
+                scene.background = new THREE.Color(0x030308);
+                scene.fog = new THREE.FogExp2(0x030308, 0.035);
+                gridHelper.visible = true;
+            }
+        });
 
         // --- LIGHTING ---
-        // Warm orange rim + Cool blue fill
         const fillLight = new THREE.HemisphereLight(0x0044aa, 0x001133, 1.5);
         scene.add(fillLight);
         
@@ -58,33 +82,50 @@
         rimLight.position.set(-10, 10, -10);
         scene.add(rimLight);
 
-        // Orbiting Colored Point Lights
         const lightCyan = new THREE.PointLight(0x00ffff, 50, 20);
         const lightMagenta = new THREE.PointLight(0xff00ff, 50, 20);
         scene.add(lightCyan);
         scene.add(lightMagenta);
 
         // --- ENVIRONMENT ---
-        // Wireframe ground grid
         const gridHelper = new THREE.GridHelper(60, 60, 0x222222, 0x111111);
         gridHelper.position.y = -5;
         scene.add(gridHelper);
 
-        // --- BOID SYSTEM ---
-        const BOID_COUNT = 400; // Optimized for Quest 3
-        const FLOCK_BOUNDS = 8; // Tighter boundary to keep them close
+        // --- HAND TRACKING SETUP ---
+        const handModelFactory = new XRHandModelFactory();
+        const hands = [];
         
-        // Shared geometry to save memory
+        // Custom glowing material for the hand mesh
+        const handMaterial = new THREE.MeshStandardMaterial({
+            color: 0x00ffff,
+            emissive: 0x00aaff,
+            emissiveIntensity: 0.8,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.6
+        });
+
+        for (let i = 0; i < 2; i++) {
+            const hand = renderer.xr.getHand(i);
+            scene.add(hand);
+            const handModel = handModelFactory.createHandModel(hand, 'mesh');
+            hand.add(handModel);
+            hands.push(hand);
+        }
+
+        // --- BOID SYSTEM ---
+        const BOID_COUNT = 400; 
+        const FLOCK_BOUNDS = 8; 
+        
         const wingGeo = new THREE.BoxGeometry(0.3, 0.02, 0.15);
-        // Shift origin to inner edge for proper flapping pivot
         wingGeo.translate(0.15, 0, 0); 
 
         const boids = [];
         const boidGroup = new THREE.Group();
-        boidGroup.position.set(0, 3, -4); // Pulled right up to the viewer's face
+        boidGroup.position.set(0, 3, -4); 
         scene.add(boidGroup);
 
-        // Dynamic attractor to create sweeping murmuration folds
         const flockTarget = new THREE.Vector3();
 
         class Boid {
@@ -102,17 +143,13 @@
                 ).normalize();
                 this.acceleration = new THREE.Vector3();
 
-                // Unique Physics Properties tuned for smooth murmuration
                 this.maxSpeed = 0.05 + Math.random() * 0.03; 
-                this.maxForce = 0.0008 + Math.random() * 0.0004; // Lower force = wider, fluid arcs
-                this.perceptionRadius = 4.0; // See far to align
-                this.separationRadius = 0.8 + Math.random() * 0.4; // Only avoid collisions when very close
+                this.maxForce = 0.0008 + Math.random() * 0.0004; 
+                this.perceptionRadius = 4.0; 
+                this.separationRadius = 0.8 + Math.random() * 0.4; 
                 this.agility = 0.8 + Math.random() * 0.4;
 
-                // Mesh Setup
                 this.mesh = new THREE.Group();
-                
-                // Emissive material
                 this.material = new THREE.MeshStandardMaterial({
                     color: 0xffffff,
                     emissive: 0xffffff,
@@ -123,22 +160,17 @@
 
                 this.wingL = new THREE.Mesh(wingGeo, this.material);
                 this.wingR = new THREE.Mesh(wingGeo, this.material);
-                
-                // Flip right wing
                 this.wingR.scale.x = -1;
 
                 this.mesh.add(this.wingL);
                 this.mesh.add(this.wingR);
-                
                 this.mesh.position.copy(this.position);
                 boidGroup.add(this.mesh);
 
-                // Animation state
                 this.flapPhase = Math.random() * Math.PI * 2;
                 this.rollAngle = 0;
             }
 
-            // Subset neighbor check optimization
             flock(boids, startIndex, count) {
                 let alignment = new THREE.Vector3();
                 let cohesion = new THREE.Vector3();
@@ -156,14 +188,12 @@
                     const other = boids[idx];
                     const distSq = this.position.distanceToSquared(other.position);
 
-                    // Alignment & Cohesion (Far)
                     if (distSq > 0 && distSq < pRadSq) {
                         alignment.add(other.velocity);
                         cohesion.add(other.position);
                         alignTotal++;
                     }
                     
-                    // Separation (Very close only - creates density)
                     if (distSq > 0 && distSq < sRadSq) {
                         let diff = new THREE.Vector3().subVectors(this.position, other.position);
                         diff.divideScalar(distSq); 
@@ -181,27 +211,44 @@
                     separation.divideScalar(sepTotal).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
                 }
 
-                // Tuning the starling murmuration weights
                 this.acceleration.add(alignment.multiplyScalar(1.2));
                 this.acceleration.add(cohesion.multiplyScalar(0.8));
                 this.acceleration.add(separation.multiplyScalar(2.0));
                 
-                // Sweeping target force (pulls the whole flock gracefully)
                 const steerToTarget = new THREE.Vector3().subVectors(flockTarget, this.position);
                 steerToTarget.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 0.4);
                 this.acceleration.add(steerToTarget);
 
-                // Soft Boundary Force (Overrides everything if they get too far)
                 const distFromCenter = this.position.length();
                 if (distFromCenter > FLOCK_BOUNDS) {
                     const steerToCenter = new THREE.Vector3().subVectors(new THREE.Vector3(0,0,0), this.position);
                     steerToCenter.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 1.5); 
                     this.acceleration.add(steerToCenter);
                 }
+
+                // --- HAND REPULSION LOGIC ---
+                // Makes the boids part like water when hands are nearby
+                hands.forEach(hand => {
+                    // Extract hand world position
+                    const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+                    
+                    // Only react if hand is somewhat close to avoid origin (0,0,0) glitches
+                    if (handWorldPos.lengthSq() > 0.01) {
+                        // Transform hand world position to local boidGroup space for accurate math
+                        const localHandPos = boidGroup.worldToLocal(handWorldPos.clone());
+                        
+                        const distSq = this.position.distanceToSquared(localHandPos);
+                        if (distSq < 2.5) { // Influence radius
+                            const push = new THREE.Vector3().subVectors(this.position, localHandPos);
+                            // Exponential push based on distance
+                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 6.0);
+                            this.acceleration.add(push);
+                        }
+                    }
+                });
             }
 
             update(dt, time) {
-                // Update physics
                 this.velocity.add(this.acceleration);
                 this.velocity.clampLength(0, this.maxSpeed);
                 this.position.add(this.velocity);
@@ -209,28 +256,20 @@
 
                 this.mesh.position.copy(this.position);
 
-                // Calculate Banking (Roll)
-                // Cross product of UP vector and Velocity gives us lateral turning info
                 const right = new THREE.Vector3(0, 1, 0).cross(this.velocity).normalize();
                 const up = new THREE.Vector3().crossVectors(this.velocity, right).normalize();
                 
-                // Build rotation matrix looking at velocity, oriented to calculated UP
                 const lookMatrix = new THREE.Matrix4().lookAt(new THREE.Vector3(), this.velocity, up);
                 const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(lookMatrix);
                 
-                // Add lateral acceleration roll mapping
-                const lateralAcc = right.dot(this.velocity); // Approximation of turning force
+                const lateralAcc = right.dot(this.velocity); 
                 const targetRoll = Math.max(Math.min(lateralAcc * -15.0 * this.agility, Math.PI/3), -Math.PI/3);
                 
-                // Smoothly interpolate roll
                 this.rollAngle += (targetRoll - this.rollAngle) * 0.1;
                 
-                // Apply look rotation then local roll
                 this.mesh.quaternion.slerp(targetQuaternion, 0.1);
                 this.mesh.rotateZ(this.rollAngle);
 
-                // Wing Flap Animation
-                // Flap speed scales with current velocity magnitude
                 const speedMult = (this.velocity.length() / this.maxSpeed) * 30.0;
                 this.flapPhase += dt * speedMult;
                 
@@ -251,62 +290,54 @@
         const colorMagenta = new THREE.Color(0xff00ff);
 
         renderer.setAnimationLoop(() => {
-            const dt = Math.min(clock.getDelta(), 0.05); // Cap dt to prevent physics explosions on lag
+            const dt = Math.min(clock.getDelta(), 0.05); 
             const time = clock.getElapsedTime();
             frameCounter++;
 
-            // Update the global murmuration attractor (Complex Lissajous curve)
+            // Hack to force our custom material onto the dynamically loaded hand meshes
+            hands.forEach(hand => {
+                hand.traverse((child) => {
+                    if (child.isMesh && child.material !== handMaterial) {
+                        child.material = handMaterial;
+                    }
+                });
+            });
+
             flockTarget.set(
                 Math.sin(time * 0.4) * 6,
                 Math.sin(time * 0.25) * 3,
                 Math.cos(time * 0.3) * 5
             );
 
-            // Orbit Lights
             lightCyan.position.set(Math.cos(time * 0.5) * 15, Math.sin(time * 0.3) * 5 + 5, Math.sin(time * 0.5) * 15 - 5);
             lightMagenta.position.set(Math.cos(time * 0.4 + Math.PI) * 15, Math.cos(time * 0.6) * 5 + 5, Math.sin(time * 0.4 + Math.PI) * 15 - 5);
 
-            // Calculate Flock Center of Mass for Color Gradients
             let centerOfMass = new THREE.Vector3();
             for(let b of boids) centerOfMass.add(b.position);
             centerOfMass.divideScalar(BOID_COUNT);
 
-            // Global pulsating intensity
             const pulse = 0.6 + 0.4 * Math.sin(time * 2.0);
-
-            // Rotating color phase
             const phaseShift = time * 0.2; 
 
             for (let i = 0; i < boids.length; i++) {
                 const boid = boids[i];
                 
-                // Subset Neighbor check logic:
-                // Instead of checking all N-1 boids, check 40 boids per frame, offset by frame count.
-                // This distributes the O(n^2) algorithm across time, maintaining high framerate.
                 boid.flock(boids, (frameCounter * 40) % BOID_COUNT, 40);
-                
                 boid.update(dt, time);
 
-                // --- UNIFIED PULSATING GRADIENT ---
                 const distToCenter = boid.position.distanceTo(centerOfMass);
-                // Normalize distance (0 at center, 1 at edges)
                 const normalizedDist = Math.max(0, Math.min(distToCenter / (FLOCK_BOUNDS * 0.8), 1.0));
                 
-                // Interpolate base color
                 const boidColor = new THREE.Color().lerpColors(colorCyan, colorMagenta, normalizedDist);
-                
-                // Shift hue over time
                 boidColor.offsetHSL(phaseShift % 1.0, 0, 0);
 
-                // Apply to emissive material
                 boid.material.emissive.copy(boidColor);
-                boid.material.emissiveIntensity = pulse * (0.8 + 0.2 * Math.random()); // slight individual flicker
+                boid.material.emissiveIntensity = pulse * (0.8 + 0.2 * Math.random()); 
             }
 
             renderer.render(scene, camera);
         });
 
-        // Handle window resize for flat mode
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
