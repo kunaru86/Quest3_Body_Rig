@@ -27,7 +27,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Open palm and face flock to pull them.</div>
+    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Open BOTH palms and face flock to pull them to you.</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -68,12 +68,12 @@
         });
         const floor = new THREE.Mesh(floorGeo, floorMat);
         floor.rotation.x = -Math.PI / 2;
-        floor.position.y = 0; // Set to true 0 for WebXR local-floor
+        floor.position.y = 0; 
         scene.add(floor);
 
         // AR Transparent Grid
         const arGrid = new THREE.GridHelper(20, 20, 0x00ffff, 0x00ffff);
-        arGrid.position.y = 0.01; // Slightly above 0 to prevent z-fighting
+        arGrid.position.y = 0.01; 
         arGrid.material.transparent = true;
         arGrid.material.opacity = 0.3;
         arGrid.visible = false;
@@ -127,10 +127,9 @@
         scene.add(lightCyan);
         scene.add(lightMagenta);
 
-        // --- HAND TRACKING & GUIDANCE SETUP ---
+        // --- HAND TRACKING SETUP ---
         const handModelFactory = new XRHandModelFactory();
         const hands = [];
-        const controllers = [];
         
         const handMaterial = new THREE.MeshStandardMaterial({
             color: 0x00ffff,
@@ -142,10 +141,6 @@
         });
 
         for (let i = 0; i < 2; i++) {
-            const controller = renderer.xr.getController(i);
-            scene.add(controller);
-            controllers.push(controller);
-
             const hand = renderer.xr.getHand(i);
             scene.add(hand);
             const handModel = handModelFactory.createHandModel(hand, 'mesh');
@@ -153,28 +148,32 @@
             hands.push(hand);
         }
 
-        // Visual tether line
-        const tetherGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        // Dual Tether Lines (Using LineSegments for two distinct lines)
+        const tetherGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(), new THREE.Vector3(), 
+            new THREE.Vector3(), new THREE.Vector3()
+        ]);
         const tetherMat = new THREE.LineBasicMaterial({ 
             color: 0x00ffff, 
             transparent: true, 
             opacity: 0,
             blending: THREE.AdditiveBlending 
         });
-        const tetherLine = new THREE.Line(tetherGeo, tetherMat);
+        const tetherLine = new THREE.LineSegments(tetherGeo, tetherMat);
         scene.add(tetherLine);
 
         // --- BOID SYSTEM ---
-        const BOID_COUNT = 400; 
-        const FLOCK_BOUNDS = 8; 
+        const BOID_COUNT = 500; // Increased by 25%
+        const FLOCK_BOUNDS = 15; // Expanded bounds for bigger flights
         
-        const wingGeo = new THREE.BoxGeometry(0.3, 0.02, 0.15);
-        wingGeo.translate(0.15, 0, 0); 
+        // Decreased size by 25%
+        const wingGeo = new THREE.BoxGeometry(0.225, 0.015, 0.1125);
+        wingGeo.translate(0.1125, 0, 0); 
 
         const boids = [];
         const boidGroup = new THREE.Group();
-        // Dropped to human chest height right in front of the player
-        boidGroup.position.set(0, 1.5, -2.5); 
+        // Placed much further away and higher up in the sky
+        boidGroup.position.set(0, 4, -10); 
         scene.add(boidGroup);
 
         const flockTarget = new THREE.Vector3();
@@ -280,15 +279,22 @@
 
                 // --- HAND REPULSION LOGIC ---
                 hands.forEach(hand => {
-                    const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
-                    if (handWorldPos.lengthSq() > 0.01) {
-                        const localHandPos = boidGroup.worldToLocal(handWorldPos.clone());
+                    // Extract reliable physical position using wrist joint if available
+                    let handPos = new THREE.Vector3();
+                    if (hand.joints && hand.joints['wrist']) {
+                        handPos.setFromMatrixPosition(hand.joints['wrist'].matrixWorld);
+                    } else {
+                        handPos.setFromMatrixPosition(hand.matrixWorld);
+                    }
+
+                    if (handPos.lengthSq() > 0.01) {
+                        const localHandPos = boidGroup.worldToLocal(handPos.clone());
                         const distSq = this.position.distanceToSquared(localHandPos);
                         
-                        // Tight 1.2m radius repulsion shield around hands
-                        if (distSq < 1.5) { 
+                        // Tight 1.5m radius repulsion shield around hands
+                        if (distSq < 2.25) { 
                             const push = new THREE.Vector3().subVectors(this.position, localHandPos);
-                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 10.0);
+                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 12.0);
                             this.acceleration.add(push);
                         }
                     }
@@ -355,58 +361,64 @@
             for(let b of boids) centerOfMass.add(b.position);
             centerOfMass.divideScalar(BOID_COUNT);
             
-            // World space center of mass for interaction math
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
+            const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
 
-            // --- PALM DETECTION & GUIDANCE LOGIC ---
-            let isPulling = false;
-            let pullTargetWorld = null;
-            let tetherStartPos = null;
+            // --- TWO-HAND PALM DETECTION & GUIDANCE ---
+            let activePullingHands = 0;
+            let activeHandPositions = [];
 
-            hands.forEach((hand, i) => {
-                const controller = controllers[i];
-                const ctrlWorldPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
-                const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+            hands.forEach((hand) => {
+                let handWorldPos = new THREE.Vector3();
+                if (hand.joints && hand.joints['wrist']) {
+                    handWorldPos.setFromMatrixPosition(hand.joints['wrist'].matrixWorld);
+                } else {
+                    handWorldPos.setFromMatrixPosition(hand.matrixWorld);
+                }
                 
-                if (ctrlWorldPos.lengthSq() < 0.01) return;
+                if (handWorldPos.lengthSq() < 0.01) return;
 
-                // 1. Check if Palm is Open via joint distance (Thumb to Pinky)
+                // 1. Check if Palm is Open
                 let palmOpen = false;
                 if (hand.joints && hand.joints['thumb-tip'] && hand.joints['pinky-finger-tip']) {
                     const thumb = new THREE.Vector3().setFromMatrixPosition(hand.joints['thumb-tip'].matrixWorld);
                     const pinky = new THREE.Vector3().setFromMatrixPosition(hand.joints['pinky-finger-tip'].matrixWorld);
-                    // ~12cm spread indicates an open hand
-                    if (thumb.distanceTo(pinky) > 0.12) {
+                    // Relaxed to 10cm to ensure varied hand sizes trigger it reliably
+                    if (thumb.distanceTo(pinky) > 0.10) {
                         palmOpen = true;
                     }
                 } else {
-                    // Fallback if joint data isn't ready
                     palmOpen = true; 
                 }
 
-                // 2. Check if facing flock
-                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(controller.quaternion).normalize();
-                const toFlock = new THREE.Vector3().subVectors(comWorld, ctrlWorldPos).normalize();
-                const dot = forward.dot(toFlock);
+                // 2. Direct Line-of-Sight Aiming (Eliminates tracking offset)
+                // Creates a vector from your eyes through your hand to find where you are pointing
+                const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
+                const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
+                const dot = aimDir.dot(toFlock);
 
-                if (palmOpen && dot > 0.8) {
-                    isPulling = true;
-                    tetherStartPos = handWorldPos.lengthSq() > 0.01 ? handWorldPos : ctrlWorldPos;
-                    // Target is brought 0.5 meters in front of the hand
-                    pullTargetWorld = tetherStartPos.clone().add(toFlock.multiplyScalar(0.5));
+                if (palmOpen && dot > 0.6) { // 0.6 is forgiving enough for dual-hand alignment
+                    activePullingHands++;
+                    activeHandPositions.push(handWorldPos);
                 }
             });
 
+            const isPulling = (activePullingHands === 2);
+
             if (isPulling) {
-                // Rainbow Phase
+                // Rainbow Phase activates on both hands
                 handMaterial.color.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
                 handMaterial.emissive.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
                 
-                // Pull flock locally
+                // Pull directly to user's headset (creates wrap-around murmuration)
+                const pullTargetWorld = camPos.clone();
                 flockTarget.lerp(boidGroup.worldToLocal(pullTargetWorld), 0.05);
 
-                // Render tether
-                tetherLine.geometry.setFromPoints([tetherStartPos, comWorld]);
+                // Render dual tethers
+                tetherLine.geometry.setFromPoints([
+                    activeHandPositions[0], comWorld,
+                    activeHandPositions[1], comWorld
+                ]);
                 tetherMat.opacity = Math.min(tetherMat.opacity + 0.1, 0.8);
                 tetherMat.color.copy(handMaterial.color);
             } else {
@@ -414,11 +426,11 @@
                 handMaterial.color.setHex(0x00ffff);
                 handMaterial.emissive.setHex(0x00aaff);
                 
-                // Idle Orbit
+                // Far Idle Orbit
                 const idleTarget = new THREE.Vector3(
-                    Math.sin(time * 0.4) * 4,
-                    Math.sin(time * 0.25) * 2,
-                    Math.cos(time * 0.3) * 3
+                    Math.sin(time * 0.3) * 8,
+                    Math.sin(time * 0.2) * 4,
+                    Math.cos(time * 0.25) * 6
                 );
                 flockTarget.lerp(idleTarget, 0.02);
                 tetherMat.opacity = Math.max(tetherMat.opacity - 0.1, 0);
