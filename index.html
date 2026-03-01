@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Quest 3 Murmuration</title>
+    <title>BiroidsXR</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         canvas { display: block; }
@@ -32,7 +32,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br><br><b>GOAL: Herd flock through the Golden Anomaly</b></div>
+    <div id="info">BiroidsXR<br>Pull: Double Open Palms<br>Tornado: Pinch fingers<br>Scatter: Punch forward<br>Freeze: Touch index fingers<br>HUD: Look at Left Wrist<br><br><b>GOAL: Herd flock through the Nexus Core</b></div>
     <div id="audio-prompt">Click anywhere or enter VR to enable Spatial Audio</div>
 
     <script type="module">
@@ -69,7 +69,7 @@
         camera.add(listener);
 
         const flockAudio = new THREE.PositionalAudio(listener);
-        scene.add(flockAudio); // Decoupled from hierarchy for explicit spatial placement
+        scene.add(flockAudio);
 
         let filter;
         let audioInitialized = false;
@@ -143,15 +143,15 @@
 
         // --- WRIST HUD SETUP ---
         const hudCanvas = document.createElement('canvas');
-        hudCanvas.width = 512;
-        hudCanvas.height = 300;
+        hudCanvas.width = 800;
+        hudCanvas.height = 400;
         const hudCtx = hudCanvas.getContext('2d');
         const hudTexture = new THREE.CanvasTexture(hudCanvas);
-        const hudMat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.9, depthTest: false });
+        // Start completely transparent
+        const hudMat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.0, depthTest: false });
         
-        const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 0.15), hudMat);
-        // We decouple it from the hand hierarchy and drop it in the scene.
-        // It will be mathematically clamped to the wrist position in the render loop.
+        const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.30, 0.15), hudMat);
+        hudMesh.visible = false;
         scene.add(hudMesh);
 
         let currentScore = 0;
@@ -163,46 +163,87 @@
         function formatTime(seconds) {
             const m = Math.floor(seconds / 60).toString().padStart(2, '0');
             const s = Math.floor(seconds % 60).toString().padStart(2, '0');
-            return `${m}:${s}`;
+            const ms = Math.floor((seconds % 1) * 100).toString().padStart(2, '0');
+            return `${m}:${s}.${ms}`;
         }
 
         function updateHUD(score, progress, total, timeStr) {
-            hudCtx.clearRect(0, 0, 512, 300);
-            hudCtx.fillStyle = 'rgba(0, 20, 40, 0.85)';
-            hudCtx.fillRect(0, 0, 512, 300);
-            
-            hudCtx.strokeStyle = '#00ffff';
+            hudCtx.clearRect(0, 0, 800, 400);
+
+            // High-end Vector Background
+            const bgGrad = hudCtx.createLinearGradient(0, 0, 800, 400);
+            bgGrad.addColorStop(0, 'rgba(5, 10, 20, 0.85)');
+            bgGrad.addColorStop(1, 'rgba(15, 25, 45, 0.95)');
+            hudCtx.fillStyle = bgGrad;
+            hudCtx.beginPath();
+            hudCtx.roundRect(0, 0, 800, 400, 40);
+            hudCtx.fill();
+
+            // Glow Border
+            hudCtx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
             hudCtx.lineWidth = 4;
-            hudCtx.strokeRect(2, 2, 508, 296);
+            hudCtx.stroke();
+
+            // Flowy Vector Graphics (Abstract waves)
+            hudCtx.lineWidth = 2;
+            hudCtx.strokeStyle = 'rgba(0, 255, 255, 0.15)';
+            hudCtx.beginPath(); hudCtx.moveTo(0, 200); hudCtx.bezierCurveTo(200, 50, 600, 350, 800, 200); hudCtx.stroke();
+            hudCtx.strokeStyle = 'rgba(255, 0, 255, 0.15)';
+            hudCtx.beginPath(); hudCtx.moveTo(0, 250); hudCtx.bezierCurveTo(300, 400, 500, 100, 800, 250); hudCtx.stroke();
+            hudCtx.strokeStyle = 'rgba(0, 150, 255, 0.1)';
+            hudCtx.beginPath(); hudCtx.moveTo(0, 150); hudCtx.bezierCurveTo(400, 100, 400, 300, 800, 150); hudCtx.stroke();
+
+            // Isolated Clock Pill
+            hudCtx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+            hudCtx.beginPath();
+            hudCtx.roundRect(40, 40, 260, 80, 40);
+            hudCtx.fill();
+            hudCtx.strokeStyle = 'rgba(0, 255, 255, 0.3)';
+            hudCtx.lineWidth = 2;
+            hudCtx.stroke();
 
             hudCtx.fillStyle = '#00ffff';
-            hudCtx.font = 'bold 40px monospace';
+            hudCtx.font = 'bold 36px monospace';
             hudCtx.textAlign = 'center';
-            hudCtx.fillText(`T+ ${timeStr}`, 256, 50);
+            hudCtx.fillText(timeStr, 170, 92);
 
+            // Main Score Text
             hudCtx.fillStyle = '#ffffff';
-            hudCtx.font = 'bold 55px monospace';
-            hudCtx.fillText(`ANOMALIES: ${score}`, 256, 120);
+            hudCtx.font = 'bold 64px sans-serif';
+            hudCtx.textAlign = 'left';
+            hudCtx.fillText(`NEXUS: ${score}`, 330, 100);
 
-            // Progress bar
-            hudCtx.fillStyle = '#333333';
-            hudCtx.fillRect(50, 150, 412, 40);
+            // Progress Bar Container
+            hudCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            hudCtx.beginPath();
+            hudCtx.roundRect(40, 180, 720, 60, 30);
+            hudCtx.fill();
             
+            // Progress Bar Fill
             const fillRatio = Math.min(progress / THRESHOLD, 1.0);
-            hudCtx.fillStyle = fillRatio >= 1.0 ? '#ffffff' : '#ffaa00';
-            hudCtx.fillRect(54, 154, 404 * fillRatio, 32);
-            
+            if (fillRatio > 0) {
+                const barGrad = hudCtx.createLinearGradient(45, 185, 45 + (710 * fillRatio), 185);
+                barGrad.addColorStop(0, '#ff5500');
+                barGrad.addColorStop(1, fillRatio >= 1.0 ? '#ffffff' : '#ffaa00');
+                hudCtx.fillStyle = barGrad;
+                hudCtx.beginPath();
+                hudCtx.roundRect(45, 185, 710 * fillRatio, 50, 25);
+                hudCtx.fill();
+            }
+
+            // Status Texts
             hudCtx.fillStyle = '#ffffff';
-            hudCtx.font = '28px monospace';
-            hudCtx.fillText(`HERD MASS: ${progress} / ${THRESHOLD}`, 256, 230);
+            hudCtx.font = 'bold 32px sans-serif';
+            hudCtx.textAlign = 'center';
+            hudCtx.fillText(`HERD MASS: ${progress} / ${THRESHOLD}`, 400, 300);
             
-            hudCtx.fillStyle = '#aaaaaa';
-            hudCtx.font = '24px monospace';
-            hudCtx.fillText(`TOTAL BIRDS SAVED: ${total}`, 256, 270);
+            hudCtx.fillStyle = '#8888aa';
+            hudCtx.font = '24px sans-serif';
+            hudCtx.fillText(`TOTAL SAVED: ${total}`, 400, 350);
 
             hudTexture.needsUpdate = true;
         }
-        updateHUD(0, 0, 0, "00:00");
+        updateHUD(0, 0, 0, "00:00.00");
 
         // --- HAND TRACKING SETUP ---
         const handModelFactory = new XRHandModelFactory();
@@ -234,20 +275,13 @@
         const BOID_COUNT = 5000; 
         const FLOCK_BOUNDS = 15; 
         
-        // --- CUSTOM BIRD GEOMETRY V3 ---
-        // Spine: 0, 0.05, 0 | Belly: 0, -0.05, 0 | Nose: 0, 0, -0.2 | Tail: 0, 0, 0.2
-        // WingL: -0.4, 0, 0 | WingR: 0.4, 0, 0
         const vArray = new Float32Array([
-            // Left Wing Top
             0,0.05,0,  -0.4,0,0,  0,0,-0.2, 
             0,0.05,0,  0,0,0.2,  -0.4,0,0,  
-            // Right Wing Top
             0,0.05,0,  0,0,-0.2,  0.4,0,0,  
             0,0.05,0,  0.4,0,0,   0,0,0.2,  
-            // Left Wing Bottom
             0,-0.05,0,  0,0,-0.2, -0.4,0,0, 
             0,-0.05,0,  -0.4,0,0, 0,0,0.2,  
-            // Right Wing Bottom
             0,-0.05,0,  0.4,0,0,  0,0,-0.2, 
             0,-0.05,0,  0,0,0.2,  0.4,0,0   
         ]);
@@ -255,13 +289,11 @@
         boidGeo.setAttribute('position', new THREE.BufferAttribute(vArray, 3));
         boidGeo.computeVertexNormals();
         
-        // Solid Body Material with PolygonOffset to fix Z-fighting with wireframe
         const boidMat = new THREE.MeshStandardMaterial({ 
             color: 0x222222, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide,
             polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
         });
         
-        // Sharp black wireframe overlay
         const wireMat = new THREE.MeshBasicMaterial({ 
             color: 0x000000, wireframe: true, transparent: true, opacity: 0.8 
         });
@@ -341,25 +373,35 @@
         boidGeo.setAttribute('aFlapPhase', new THREE.InstancedBufferAttribute(flapPhases, 1));
         boidGeo.setAttribute('aGlowColor', new THREE.InstancedBufferAttribute(glowColors, 3));
 
-        // --- GAME LOGIC: THE ANOMALY ---
-        const anomalyGeo = new THREE.TorusGeometry(1.5, 0.05, 16, 64);
-        const anomalyMat = new THREE.MeshStandardMaterial({
-            color: 0xffaa00, emissive: 0xffaa00, emissiveIntensity: 2.0, transparent: true, opacity: 0.8
-        });
-        const anomalyMesh = new THREE.Mesh(anomalyGeo, anomalyMat);
-        boidGroup.add(anomalyMesh); 
+        // --- GAME LOGIC: THE NEXUS CORE ---
+        const nexusGroup = new THREE.Group();
+        boidGroup.add(nexusGroup); 
 
-        function relocateAnomaly() {
-            anomalyMesh.position.set(
+        const nexusOuter = new THREE.Mesh(
+            new THREE.TorusGeometry(1.8, 0.02, 16, 100),
+            new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.5 })
+        );
+        const nexusInner = new THREE.Mesh(
+            new THREE.TorusGeometry(1.4, 0.06, 16, 64),
+            new THREE.MeshStandardMaterial({ color: 0xffaa00, emissive: 0xffaa00, emissiveIntensity: 2.0, transparent: true, opacity: 0.9 })
+        );
+        const nexusCoreMesh = new THREE.Mesh(
+            new THREE.OctahedronGeometry(0.3, 0),
+            new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x00ffff, emissiveIntensity: 5.0, wireframe: true })
+        );
+        nexusGroup.add(nexusOuter, nexusInner, nexusCoreMesh);
+
+        function relocateNexus() {
+            nexusGroup.position.set(
                 (Math.random() - 0.5) * 12,
                 (Math.random() - 0.5) * 8,
                 (Math.random() - 0.5) * 12
             );
-            anomalyMat.emissive.setHex(0xffffff);
-            anomalyMat.emissiveIntensity = 10.0;
-            anomalyMesh.scale.set(1.5, 1.5, 1.5);
+            nexusInner.material.emissive.setHex(0xffffff);
+            nexusInner.material.emissiveIntensity = 10.0;
+            nexusGroup.scale.set(1.5, 1.5, 1.5);
         }
-        relocateAnomaly();
+        relocateNexus();
 
         const flockTarget = new THREE.Vector3();
         let shockwaves = []; 
@@ -545,12 +587,17 @@
             if (sessionStartTime === null) sessionStartTime = time;
             const sessionElapsed = time - sessionStartTime;
 
-            // Anomaly visual logic
-            anomalyMesh.rotation.y += rawDt;
-            anomalyMesh.rotation.x += rawDt * 0.5;
-            if (anomalyMat.emissiveIntensity > 2.0) anomalyMat.emissiveIntensity -= rawDt * 10;
-            if (anomalyMesh.scale.x > 1.0) anomalyMesh.scale.lerp(new THREE.Vector3(1,1,1), 0.1);
-            anomalyMat.emissive.lerp(new THREE.Color(0xffaa00), 0.05);
+            // Nexus visual logic
+            nexusOuter.rotation.x += rawDt * 0.5;
+            nexusOuter.rotation.y += rawDt * 0.3;
+            nexusInner.rotation.y -= rawDt * 0.8;
+            nexusInner.rotation.x -= rawDt * 0.4;
+            nexusCoreMesh.rotation.y += rawDt * 2.0;
+            nexusCoreMesh.rotation.z += rawDt * 1.5;
+
+            if (nexusInner.material.emissiveIntensity > 2.0) nexusInner.material.emissiveIntensity -= rawDt * 10;
+            if (nexusGroup.scale.x > 1.0) nexusGroup.scale.lerp(new THREE.Vector3(1,1,1), 0.1);
+            nexusInner.material.emissive.lerp(new THREE.Color(0xffaa00), 0.05);
 
             hands.forEach(hand => {
                 hand.traverse((child) => {
@@ -559,14 +606,14 @@
             });
 
             let centerOfMass = new THREE.Vector3();
-            let boidsInAnomaly = 0;
+            let boidsInNexus = 0;
             let avgVelocity = 0;
 
             for(let b of boids) {
                 centerOfMass.add(b.position);
                 avgVelocity += b.velocity.length();
-                if (b.position.distanceToSquared(anomalyMesh.position) < 2.25) { 
-                    boidsInAnomaly++;
+                if (b.position.distanceToSquared(nexusGroup.position) < 3.0) { // Slightly larger radius for the rings
+                    boidsInNexus++;
                 }
             }
             centerOfMass.divideScalar(BOID_COUNT);
@@ -575,20 +622,34 @@
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
             const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
 
-            // --- HUD DECOUPLED TRACKING (Always faces camera) ---
+            // --- HUD SMARTWATCH GESTURE (Look at left wrist) ---
             let leftWristPos = getJointPos(hands[0], 'wrist');
-            let leftHandFallback = new THREE.Vector3().setFromMatrixPosition(hands[0].matrixWorld);
+            let isLookingAtWatch = false;
 
             if (leftWristPos && leftWristPos.lengthSq() > 0.01) {
-                hudMesh.position.copy(leftWristPos);
-                hudMesh.position.y += 0.15; // Hover 15cm above wrist
-                hudMesh.lookAt(camPos);
+                const distToFace = camPos.distanceTo(leftWristPos);
+                // Check if hand is raised close to the face
+                if (distToFace > 0.2 && distToFace < 0.7) {
+                    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                    const toHand = new THREE.Vector3().subVectors(leftWristPos, camPos).normalize();
+                    // Check if camera is pointing generally towards the hand
+                    if (camForward.dot(toHand) > 0.6) {
+                        isLookingAtWatch = true;
+                    }
+                }
+            }
+
+            const hudOpacityTarget = isLookingAtWatch ? 0.95 : 0.0;
+            hudMat.opacity += (hudOpacityTarget - hudMat.opacity) * 0.1;
+            
+            if (hudMat.opacity > 0.01) {
                 hudMesh.visible = true;
-            } else if (leftHandFallback.lengthSq() > 0.01) {
-                hudMesh.position.copy(leftHandFallback);
-                hudMesh.position.y += 0.15; 
-                hudMesh.lookAt(camPos);
-                hudMesh.visible = true;
+                // Billboard the HUD above the wrist, facing the user
+                if (leftWristPos) {
+                    hudMesh.position.copy(leftWristPos);
+                    hudMesh.position.y += 0.12; 
+                    hudMesh.lookAt(camPos);
+                }
             } else {
                 hudMesh.visible = false;
             }
@@ -602,23 +663,22 @@
                 const distToCam = camPos.distanceTo(comWorld);
                 const targetVol = Math.max(0, Math.min(1.0 - (distToCam / 25.0), 1.0));
                 
-                // Tie volume to positional node's intrinsic gain
                 flockAudio.gain.gain.setTargetAtTime(targetVol, audioCtx.currentTime, 0.1);
-                
-                // Track spatial position frame-by-frame
                 flockAudio.position.copy(comWorld);
             }
 
             // Update UI & Game Logic
-            if (boidsInAnomaly !== currentProgress || frameCounter % 30 === 0) {
-                currentProgress = boidsInAnomaly;
-                updateHUD(currentScore, currentProgress, totalCaptured, formatTime(sessionElapsed));
+            if (boidsInNexus !== currentProgress || frameCounter % 10 === 0) {
+                currentProgress = boidsInNexus;
+                if (hudMesh.visible) {
+                    updateHUD(currentScore, currentProgress, totalCaptured, formatTime(sessionElapsed));
+                }
             }
 
             if (currentProgress >= THRESHOLD) {
                 currentScore++;
                 totalCaptured += currentProgress;
-                relocateAnomaly();
+                relocateNexus();
             }
 
             const localHands = [];
@@ -667,13 +727,16 @@
                         });
                     }
 
-                    let palmOpen = thumbTip.distanceTo(pinkyTip) > 0.10;
-                    const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
-                    const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
-                    
-                    if (palmOpen && aimDir.dot(toFlock) > 0.6) {
-                        activePullingHands++;
-                        activeHandPositions.push(handWorldPos);
+                    // Disable pull mechanics if explicitly looking at watch to avoid conflicting intent
+                    if (!isLookingAtWatch || i !== 0) {
+                        let palmOpen = thumbTip.distanceTo(pinkyTip) > 0.10;
+                        const aimDir = new THREE.Vector3().subVectors(handWorldPos, camPos).normalize();
+                        const toFlock = new THREE.Vector3().subVectors(comWorld, handWorldPos).normalize();
+                        
+                        if (palmOpen && aimDir.dot(toFlock) > 0.6) {
+                            activePullingHands++;
+                            activeHandPositions.push(handWorldPos);
+                        }
                     }
                 }
             });
