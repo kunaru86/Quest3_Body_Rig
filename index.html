@@ -2,18 +2,15 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, RotateCcw, Download, Lock, Unlock, Palette, Activity, Zap, Droplets, Glasses } from 'lucide-react';
 import * as THREE from 'three';
 
-// POLLOCK SWARM V10 - "THE DRUNK WALK SPHERE XR"
-// Architecture: Offscreen 2D Canvas mapped to an inverted 3D sphere.
+// POLLOCK SWARM V10.1 - "THE DRUNK WALK SPHERE XR" (Hardened)
 
 const App = () => {
-  // --- REFS ---
   const mountRef = useRef(null);
   const canvas2DRef = useRef(null);
   const textureRef = useRef(null);
   const rendererRef = useRef(null);
   const boidsRef = useRef([]);
   
-  // We use a mutable ref for config so the Three.js loop never hits a stale closure
   const config = useRef({
     status: 'IDLE',
     progress: 0,
@@ -26,7 +23,6 @@ const App = () => {
     isPaletteLocked: false,
   });
 
-  // --- UI STATE (Synced with config ref) ---
   const [status, setStatus] = useState('IDLE');
   const [progress, setProgress] = useState(0);
   const [chaosLevel, setChaosLevel] = useState(0.8);
@@ -37,13 +33,11 @@ const App = () => {
   const [isPaletteLocked, setIsPaletteLocked] = useState(false);
   const [vrSupported, setVrSupported] = useState(false);
 
-  // --- STATE SYNC HELPERS ---
   const updateConfig = (key, val, setter) => {
     config.current[key] = val;
-    setter(val);
+    if (setter) setter(val);
   };
 
-  // --- COLOR ENGINE ---
   const generatePalette = useCallback(() => {
     if (config.current.isPaletteLocked && config.current.palette.length > 0) {
       return config.current.palette;
@@ -70,7 +64,6 @@ const App = () => {
     return colors;
   }, []);
 
-  // --- CORE SYSTEM INIT ---
   const initSystem = useCallback(() => {
     const canvas = canvas2DRef.current;
     if (!canvas) return;
@@ -79,7 +72,6 @@ const App = () => {
     const width = canvas.width;
     const height = canvas.height;
     
-    // Fill background
     ctx.fillStyle = config.current.paletteMood === 'MOODY' ? '#0f172a' : '#f8fafc'; 
     ctx.fillRect(0, 0, width, height);
 
@@ -107,46 +99,50 @@ const App = () => {
     updateConfig('progress', 0, setProgress);
     updateConfig('status', 'RUNNING', setStatus);
     
-    // Force texture update to show background immediately
     if (textureRef.current) textureRef.current.needsUpdate = true;
   }, [generatePalette]);
 
-  // --- THREE.JS & WEBXR SETUP ---
   useEffect(() => {
-    // 1. Initialize Offscreen Canvas (Equirectangular aspect ratio)
+    // 1. Initialize Offscreen Canvas
     const canvas2D = document.createElement('canvas');
     canvas2D.width = 2048; 
     canvas2D.height = 1024;
     canvas2DRef.current = canvas2D;
 
-    // 2. Setup Three.js Scene
+    // 2. Three.js Scene Setup
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    // Position camera at exact center of the sphere
     camera.position.set(0, 0, 0); 
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true; // CRITICAL FOR XR
+    renderer.xr.enabled = true; 
     rendererRef.current = renderer;
+    
+    // Clear existing DOM children to prevent React 18 StrictMode duplicate canvas bugs
+    while (mountRef.current.firstChild) {
+        mountRef.current.removeChild(mountRef.current.firstChild);
+    }
     mountRef.current.appendChild(renderer.domElement);
 
-    // 3. Create Inverted Sphere
+    // 3. Sphere Mapping
     const texture = new THREE.CanvasTexture(canvas2D);
+    texture.minFilter = THREE.LinearFilter; // Optimize for XR
     textureRef.current = texture;
-    // Scale X by -1 to flip the geometry inside out
+    
     const geometry = new THREE.SphereGeometry(50, 64, 64);
-    geometry.scale(-1, 1, 1); 
+    geometry.scale(-1, 1, 1); // Invert normals
     
     const material = new THREE.MeshBasicMaterial({ 
       map: texture,
-      side: THREE.BackSide 
+      side: THREE.BackSide,
+      toneMapped: false // Prevent colors from washing out
     });
     const sphere = new THREE.Mesh(geometry, material);
     scene.add(sphere);
 
-    // 4. Handle Window Resizing
+    // 4. Events
     const onWindowResize = () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
@@ -154,21 +150,24 @@ const App = () => {
     };
     window.addEventListener('resize', onWindowResize);
 
-    // 5. Check XR Support
+    // 5. XR Support Check
     if ('xr' in navigator) {
       navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
         setVrSupported(supported);
-      });
+      }).catch(() => setVrSupported(false));
     }
 
-    // 6. The XR-Safe Animation Loop
+    // Auto-start on boot so it's not a black screen
+    initSystem();
+
+    // 6. Loop
     renderer.setAnimationLoop(() => {
       const cfg = config.current;
       
-      // If we are running, calculate 2D physics and draw
       if (cfg.status === 'RUNNING') {
         cfg.progress += 1;
-        setProgress(cfg.progress); // Update UI
+        // Batch UI updates every 10 frames to save CPU for WebGL
+        if (cfg.progress % 10 === 0) setProgress(cfg.progress); 
         
         if (cfg.progress >= cfg.duration) {
           updateConfig('status', 'FINISHED', setStatus);
@@ -179,11 +178,8 @@ const App = () => {
         const width = canvas2D.width;
         const height = canvas2D.height;
 
-        ctx.shadowBlur = 2;
-        ctx.shadowColor = "rgba(0,0,0,0.1)";
-        ctx.shadowOffsetY = 1;
-        ctx.shadowOffsetX = 1;
-
+        ctx.shadowBlur = 0; // Disabled shadows for XR performance
+        
         for (let i = 0; i < boids.length; i++) {
           const boid = boids[i];
           const prevX = boid.x;
@@ -195,11 +191,8 @@ const App = () => {
           const surgeFactor = (Math.sin(boid.energyPhase) + 1) / 2; 
           const currentLimit = 0.5 + (surgeFactor * boid.maxSurge);
 
-          const thrustX = Math.cos(boid.wanderTheta);
-          const thrustY = Math.sin(boid.wanderTheta);
-
-          boid.vx += thrustX * 0.5;
-          boid.vy += thrustY * 0.5;
+          boid.vx += Math.cos(boid.wanderTheta) * 0.5;
+          boid.vy += Math.sin(boid.wanderTheta) * 0.5;
 
           boid.vx *= 0.95;
           boid.vy *= 0.95;
@@ -213,23 +206,19 @@ const App = () => {
           boid.x += boid.vx;
           boid.y += boid.vy;
 
-          // SPATIAL WRAPPING FOR EQUIRECTANGULAR SPHERE
-          // X wraps seamlessly around the equator
+          // Spatial Wrapping
           if (boid.x < 0) { boid.x += width; }
           if (boid.x > width) { boid.x -= width; }
           
-          // Y bounces off the poles to avoid pinching anomalies
           if (boid.y < 0) { boid.y = 0; boid.vy *= -1; boid.wanderTheta += Math.PI; }
           if (boid.y > height) { boid.y = height; boid.vy *= -1; boid.wanderTheta += Math.PI; }
 
           if (currentSpeed > 0.1) {
-            // Lines are slightly thicker to accommodate the high-res sphere mapping
             const targetWidth = Math.max(1.0, Math.pow(8 / currentSpeed, 1.3));
             boid.currentWidth = boid.currentWidth + (targetWidth - boid.currentWidth) * 0.1;
 
             ctx.beginPath();
             ctx.moveTo(prevX, prevY);
-            // Prevent drawing a massive line across the screen when wrapping X axis
             if (Math.abs(boid.x - prevX) < width / 2) {
                 ctx.lineTo(boid.x, boid.y);
             } else {
@@ -242,7 +231,7 @@ const App = () => {
             ctx.lineJoin = 'round';
             ctx.stroke();
 
-            // SPLATS
+            // Splats
             if ((currentSpeed < 2 || currentSpeed > 10) && Math.random() < (cfg.splatFrequency * 0.05)) {
                const angle = Math.random() * Math.PI * 2;
                const distance = (Math.random() * boid.currentWidth * 2) + (currentSpeed * 2);
@@ -250,7 +239,6 @@ const App = () => {
                let dropX = boid.x + Math.cos(angle) * distance;
                let dropY = boid.y + Math.sin(angle) * distance;
                
-               // Wrap splat drops too
                if (dropX < 0) dropX += width;
                if (dropX > width) dropX -= width;
                
@@ -262,24 +250,26 @@ const App = () => {
             }
           }
         }
-        // Tell Three.js the canvas has changed so it uploads to the GPU
         texture.needsUpdate = true;
       }
       
-      // Render the 3D scene
       renderer.render(scene, camera);
     });
 
+    // Cleanup Pipeline
     return () => {
       window.removeEventListener('resize', onWindowResize);
       renderer.setAnimationLoop(null);
-      if (mountRef.current) {
-        mountRef.current.removeChild(renderer.domElement);
+      if (mountRef.current && renderer.domElement) {
+        try { mountRef.current.removeChild(renderer.domElement); } catch (e) {}
       }
+      geometry.dispose();
+      material.dispose();
+      texture.dispose();
+      renderer.dispose();
     };
-  }, []);
+  }, [initSystem]);
 
-  // --- ACTIONS ---
   const downloadArt = () => {
     if (!canvas2DRef.current) return;
     const link = document.createElement('a');
@@ -293,19 +283,17 @@ const App = () => {
     try {
       const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor'] };
       const session = await navigator.xr.requestSession('immersive-vr', sessionInit);
-      rendererRef.current.xr.setSession(session);
+      await rendererRef.current.xr.setSession(session);
     } catch (e) {
-      console.error("Failed to enter VR:", e);
-      alert("VR Session failed. Make sure you are using a secure HTTPS context on a supported headset.");
+      console.error("VR Session failed:", e);
+      alert("VR failed. Ensure you are on HTTPS (or localhost) and your headset is connected.");
     }
   };
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100vh', background: '#000', overflow: 'hidden', fontFamily: 'sans-serif' }}>
-      {/* 3D WebGL Canvas Container */}
       <div ref={mountRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }} />
 
-      {/* Control Deck UI */}
       <div style={{ 
         position: 'absolute', bottom: '32px', right: '32px', zIndex: 10, 
         background: 'rgba(255, 255, 255, 0.85)', backdropFilter: 'blur(16px)', 
@@ -376,7 +364,6 @@ const App = () => {
             </button>
           </div>
           
-          {/* WebXR Entry Button */}
           {vrSupported ? (
             <button onClick={enterVR} style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '14px', borderRadius: '12px', fontSize: '12px', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', boxShadow: '0 4px 14px 0 rgba(59,130,246,0.39)' }}>
               <Glasses size={16} /> ENTER VR
