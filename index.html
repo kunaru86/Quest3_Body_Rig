@@ -27,7 +27,7 @@
     </script>
 </head>
 <body>
-    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Point at flock to guide them.</div>
+    <div id="info">VR/AR Boids System<br>Select VR (Void) or AR (Passthrough)<br>Open palm and face flock to pull them.</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -41,7 +41,7 @@
         scene.fog = new THREE.FogExp2(0x010103, 0.035);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
-        camera.position.set(0, 5, 15);
+        camera.position.set(0, 1.6, 3); // Desktop fallback height
 
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -59,7 +59,7 @@
         document.body.appendChild(arBtn);
 
         // --- ENVIRONMENT SETUP ---
-        // Solid Floor
+        // Solid Floor (VR only)
         const floorGeo = new THREE.PlaneGeometry(200, 200);
         const floorMat = new THREE.MeshStandardMaterial({ 
             color: 0x020205, 
@@ -68,15 +68,22 @@
         });
         const floor = new THREE.Mesh(floorGeo, floorMat);
         floor.rotation.x = -Math.PI / 2;
-        floor.position.y = -5;
+        floor.position.y = 0; // Set to true 0 for WebXR local-floor
         scene.add(floor);
+
+        // AR Transparent Grid
+        const arGrid = new THREE.GridHelper(20, 20, 0x00ffff, 0x00ffff);
+        arGrid.position.y = 0.01; // Slightly above 0 to prevent z-fighting
+        arGrid.material.transparent = true;
+        arGrid.material.opacity = 0.3;
+        arGrid.visible = false;
+        scene.add(arGrid);
 
         // Night Sky (Stars)
         const starsGeo = new THREE.BufferGeometry();
         const starsCount = 3000;
         const posArray = new Float32Array(starsCount * 3);
         for(let i = 0; i < starsCount * 3; i++) {
-            // Distribute stars far out
             posArray[i] = (Math.random() - 0.5) * 150;
         }
         starsGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
@@ -97,11 +104,13 @@
                 scene.fog = null;
                 floor.visible = false;
                 starMesh.visible = false;
+                arGrid.visible = true;
             } else {
                 scene.background = new THREE.Color(0x010103);
                 scene.fog = new THREE.FogExp2(0x010103, 0.035);
                 floor.visible = true;
                 starMesh.visible = true;
+                arGrid.visible = false;
             }
         });
 
@@ -133,12 +142,10 @@
         });
 
         for (let i = 0; i < 2; i++) {
-            // Get controller for targetRay (pointing direction)
             const controller = renderer.xr.getController(i);
             scene.add(controller);
             controllers.push(controller);
 
-            // Get hand mesh for visual and repulsion
             const hand = renderer.xr.getHand(i);
             scene.add(hand);
             const handModel = handModelFactory.createHandModel(hand, 'mesh');
@@ -166,7 +173,8 @@
 
         const boids = [];
         const boidGroup = new THREE.Group();
-        boidGroup.position.set(0, 3, -4); 
+        // Dropped to human chest height right in front of the player
+        boidGroup.position.set(0, 1.5, -2.5); 
         scene.add(boidGroup);
 
         const flockTarget = new THREE.Vector3();
@@ -276,9 +284,11 @@
                     if (handWorldPos.lengthSq() > 0.01) {
                         const localHandPos = boidGroup.worldToLocal(handWorldPos.clone());
                         const distSq = this.position.distanceToSquared(localHandPos);
-                        if (distSq < 2.5) {
+                        
+                        // Tight 1.2m radius repulsion shield around hands
+                        if (distSq < 1.5) { 
                             const push = new THREE.Vector3().subVectors(this.position, localHandPos);
-                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 6.0);
+                            push.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce * 10.0);
                             this.acceleration.add(push);
                         }
                     }
@@ -331,7 +341,7 @@
             const time = clock.getElapsedTime();
             frameCounter++;
 
-            // Force custom wireframe glow material on hands
+            // Force custom wireframe material on hands
             hands.forEach(hand => {
                 hand.traverse((child) => {
                     if (child.isMesh && child.material !== handMaterial) {
@@ -348,57 +358,70 @@
             // World space center of mass for interaction math
             const comWorld = boidGroup.localToWorld(centerOfMass.clone());
 
-            // --- GUIDANCE LOGIC ---
-            let maxDot = 0;
-            let guidingCtrl = null;
+            // --- PALM DETECTION & GUIDANCE LOGIC ---
+            let isPulling = false;
+            let pullTargetWorld = null;
             let tetherStartPos = null;
 
-            controllers.forEach((controller, i) => {
+            hands.forEach((hand, i) => {
+                const controller = controllers[i];
                 const ctrlWorldPos = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
+                const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hand.matrixWorld);
+                
                 if (ctrlWorldPos.lengthSq() < 0.01) return;
 
-                // Controller target ray usually points down -Z
+                // 1. Check if Palm is Open via joint distance (Thumb to Pinky)
+                let palmOpen = false;
+                if (hand.joints && hand.joints['thumb-tip'] && hand.joints['pinky-finger-tip']) {
+                    const thumb = new THREE.Vector3().setFromMatrixPosition(hand.joints['thumb-tip'].matrixWorld);
+                    const pinky = new THREE.Vector3().setFromMatrixPosition(hand.joints['pinky-finger-tip'].matrixWorld);
+                    // ~12cm spread indicates an open hand
+                    if (thumb.distanceTo(pinky) > 0.12) {
+                        palmOpen = true;
+                    }
+                } else {
+                    // Fallback if joint data isn't ready
+                    palmOpen = true; 
+                }
+
+                // 2. Check if facing flock
                 const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(controller.quaternion).normalize();
-                
-                // Vector towards the flock
                 const toFlock = new THREE.Vector3().subVectors(comWorld, ctrlWorldPos).normalize();
                 const dot = forward.dot(toFlock);
 
-                // If pointing closely at the flock's mass
-                if (dot > 0.85 && dot > maxDot) {
-                    maxDot = dot;
-                    guidingCtrl = controller;
-                    
-                    // Fallback to controller pos if hand mesh isn't tracking yet
-                    const handWorldPos = new THREE.Vector3().setFromMatrixPosition(hands[i].matrixWorld);
+                if (palmOpen && dot > 0.8) {
+                    isPulling = true;
                     tetherStartPos = handWorldPos.lengthSq() > 0.01 ? handWorldPos : ctrlWorldPos;
+                    // Target is brought 0.5 meters in front of the hand
+                    pullTargetWorld = tetherStartPos.clone().add(toFlock.multiplyScalar(0.5));
                 }
             });
 
-            if (guidingCtrl) {
-                // Determine target offset based on hand pointing
-                const ctrlWorldPos = new THREE.Vector3().setFromMatrixPosition(guidingCtrl.matrixWorld);
-                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(guidingCtrl.quaternion).normalize();
+            if (isPulling) {
+                // Rainbow Phase
+                handMaterial.color.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
+                handMaterial.emissive.setHSL((time * 0.8) % 1.0, 1.0, 0.5);
                 
-                // Sweep flock at its current distance, projecting the point forward
-                const distToFlock = ctrlWorldPos.distanceTo(comWorld);
-                const projectedWorldTarget = ctrlWorldPos.clone().add(forward.multiplyScalar(distToFlock));
-                
-                // Convert to local boidGroup space and lerp smoothly
-                flockTarget.lerp(boidGroup.worldToLocal(projectedWorldTarget), 0.05);
+                // Pull flock locally
+                flockTarget.lerp(boidGroup.worldToLocal(pullTargetWorld), 0.05);
 
-                // Render tether connecting hand to flock center
+                // Render tether
                 tetherLine.geometry.setFromPoints([tetherStartPos, comWorld]);
-                tetherMat.opacity = Math.min(tetherMat.opacity + 0.05, 0.5);
+                tetherMat.opacity = Math.min(tetherMat.opacity + 0.1, 0.8);
+                tetherMat.color.copy(handMaterial.color);
             } else {
-                // Revert to Lissajous automatic orbit if no one is guiding
+                // Default Cyan Phase
+                handMaterial.color.setHex(0x00ffff);
+                handMaterial.emissive.setHex(0x00aaff);
+                
+                // Idle Orbit
                 const idleTarget = new THREE.Vector3(
-                    Math.sin(time * 0.4) * 6,
-                    Math.sin(time * 0.25) * 3,
-                    Math.cos(time * 0.3) * 5
+                    Math.sin(time * 0.4) * 4,
+                    Math.sin(time * 0.25) * 2,
+                    Math.cos(time * 0.3) * 3
                 );
                 flockTarget.lerp(idleTarget, 0.02);
-                tetherMat.opacity = Math.max(tetherMat.opacity - 0.05, 0);
+                tetherMat.opacity = Math.max(tetherMat.opacity - 0.1, 0);
             }
 
             // Light Orbits
